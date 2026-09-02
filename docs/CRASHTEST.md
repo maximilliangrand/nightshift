@@ -26,6 +26,10 @@ A case passes only if `expect` returns `null` and step 5 finds nothing. The suit
 | `fast-orphan` | detaches a child into its own session and exits within 60 ms | descendant walk on the output chunk, then the orphan sweep |
 | `wrapper-shell` | a `sh` wrapper that dies on SIGTERM around a worker that ignores it | grace measured from the SIGTERM, then SIGKILL for the worker |
 | `spawn-fail` | the command does not exist | outcome `failed`, exit 127 in the report, report still written |
+| `silent-orphan` | detaches `/bin/sleep` (an Apple platform binary, environment invisible to `ps -E`) into a new session, prints nothing, exits at once | the stray check: new since spawn, re-parented to init, cwd is the run's |
+| `grace-spawner` | spawns a detached `/bin/sleep` from inside its SIGTERM handler, during the grace period | second SIGKILL wave, stray check |
+| `unpriced-model` | speaks stream-json for a model id with no list price | `--budget`, counted at the ceiling price |
+| `noeol-stream` | one 900k-token event with no trailing newline, then silence | `--max-tokens`, complete objects are parsed without waiting for a newline |
 | `orphan` | detaches `sleep 300` into its own session, exits 0 after 1.5 s | orphan sweep after exit |
 | `fork-bomb-lite` | spawns 30 sleepers, goes silent | `--idle-timeout`, whole group dies |
 | `disk-filler` | writes 2 MB every 50 ms | `--max-disk-growth --watch .` |
@@ -48,7 +52,8 @@ Cases should reproduce something that actually happened, or something you are ce
 
 ## What the suite does not cover
 
-- On macOS, Apple platform binaries (`/bin/sh`, `/bin/sleep`, `/usr/bin/tail` and friends) never show their environment to `ps -E`, so the marker net cannot see them. They are still caught by the process group and by the descendant walk, which runs at spawn, on every output chunk and on every tick. A platform binary that is detached into a new session by a parent that prints nothing and exits before the first walk (under 100 ms) escapes. `fast-orphan` uses a `bun` child precisely so that the marker net is also exercised; the platform-binary variant is the documented gap.
+- A process that is detached into a new session by a silent parent that exits before the first tree walk, *and* hides or scrubs its environment (every Apple platform binary does this for free on macOS), *and* changes its working directory away from the run's. `silent-orphan` covers the first two; the third step is the documented gap. A process that goes to that trouble is not misbehaving by accident.
+- The `--idle-timeout` watchdog measures silence. An agent that prints a dot every second while doing nothing is not idle by that definition; `--max-runtime` and `--budget` are the limits for that shape.
 - Disk growth outside the watched directories and off the working volume.
 - Network side effects that do not go through the ledger or the hook.
 - Anything that needs a real model. `budget-blower.ts` fakes the stream; the metering itself is covered by `test/claude-meter.test.ts` against events captured from a real run.

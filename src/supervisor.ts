@@ -9,12 +9,16 @@
  * (NIGHTSHIFT_RUN_ID), so anything still carrying it is ours no matter what
  * it did to its group or parent.
  *
- * Each net has a known blind spot, stated in the README. Apple platform
- * binaries (/bin/sh, /bin/sleep, /usr/bin/tail ...) never show their
- * environment to `ps -E`, so on macOS the marker net sees bun, node, python,
- * git and claude but not a bare shell loop. The descendant map covers those
- * as long as it was refreshed while the parent was alive, which is why it is
- * refreshed so often.
+ * Each net has a blind spot. Apple platform binaries (/bin/sh, /bin/sleep,
+ * /usr/bin/tail ...) never show their environment to `ps -E`, so on macOS the
+ * marker net sees bun, node, python, git and claude but not a bare shell
+ * loop. The descendant map covers those only if it was refreshed while the
+ * parent was alive. A parent that detaches a child into a new session, prints
+ * nothing and exits at once slips all three, so there is a fourth net: a
+ * snapshot of the process table taken before spawn. Any process that was not
+ * there then, started after the run began, has been re-parented to init and
+ * still has the run's working directory as its cwd is treated as ours. A
+ * process must also chdir away to escape that one.
  *
  * Every pid we remember is remembered with its start time, so a pid that
  * was recycled by an unrelated process after ours died is dropped, never
@@ -27,6 +31,7 @@
  * because the worst outcome is a kill that quietly did not kill.
  */
 import { spawn, execFile, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -75,8 +80,20 @@ export class Supervisor {
   private killing: Promise<KillResult> | null = null;
   private lastRefresh = 0;
   private refreshing: Promise<void> | null = null;
+  /** pids alive before we spawned anything: never ours. */
+  private baseline = new Set<number>();
+  private startedAt = 0;
+  private readonly realCwd: string;
 
-  constructor(private readonly opts: SupervisorOptions) {}
+  constructor(private readonly opts: SupervisorOptions) {
+    let real = opts.cwd;
+    try {
+      real = fs.realpathSync(opts.cwd);
+    } catch {
+      // Keep the given path.
+    }
+    this.realCwd = real;
+  }
 
   get pid(): number | null {
     return this.child?.pid ?? null;
@@ -91,9 +108,12 @@ export class Supervisor {
     return this.startFailure;
   }
 
-  start(): number | null {
+  async start(): Promise<number | null> {
     const [file, ...args] = this.opts.command;
     if (!file) throw new Error("No command to run");
+    const before = await processTable();
+    for (const row of before ?? []) this.baseline.add(row.pid);
+    this.startedAt = Date.now();
     const child = spawn(file, args, {
       cwd: this.opts.cwd,
       env: this.opts.env,
@@ -173,6 +193,32 @@ export class Supervisor {
       const row = byPid.get(pid);
       if (row) this.descendants.set(pid, row.started);
     }
+
+    // Strays: new since spawn, re-parented to init, still in our directory.
+    for (const row of await this.strays(table)) this.descendants.set(row.pid, row.started);
+  }
+
+  /**
+   * Processes that were not alive before spawn, started after the run began,
+   * have lost their parent (ppid 1) and still have the run's working
+   * directory as cwd. Nothing links them to us by group, tree or environment,
+   * but nothing else on the machine looks like that either.
+   */
+  private async strays(table: ProcessRow[]): Promise<ProcessRow[]> {
+    const root = this.child?.pid;
+    const candidates = table.filter((row) => {
+      if (this.baseline.has(row.pid) || row.pid === process.pid || row.pid === root) return false;
+      if (row.ppid !== 1 || row.stat.startsWith("Z")) return false;
+      if (this.descendants.has(row.pid)) return false;
+      const started = parseStarted(row.started);
+      return started !== null && started.getTime() >= this.startedAt - 1500;
+    });
+    if (!candidates.length) return [];
+    const cwds = await cwdOf(candidates.map((row) => row.pid));
+    return candidates.filter((row) => {
+      const cwd = cwds.get(row.pid);
+      return cwd !== undefined && (cwd === this.realCwd || cwd.startsWith(this.realCwd + "/"));
+    });
   }
 
   /** Every live process whose environment carries this run's marker. */
@@ -280,6 +326,10 @@ export class Supervisor {
       const row = byPid.get(pid);
       if (row && !row.stat.startsWith("Z")) alive.add(pid);
     }
+    for (const row of await this.strays(table)) {
+      this.descendants.set(row.pid, row.started);
+      alive.add(row.pid);
+    }
     alive.delete(process.pid);
     return [...alive].sort((a, b) => a - b);
   }
@@ -383,10 +433,50 @@ export async function pidsWithEnv(needle: string): Promise<number[]> {
   }
 }
 
-/** Parse a `ps lstart` string. Returns null when it does not look like one. */
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Parse a `ps lstart` string ("Tue Sep  2 19:12:18 2026", local time). */
 export function parseStarted(lstart: string): Date | null {
-  const date = new Date(lstart.replace(/\s+/g, " "));
-  return Number.isNaN(date.getTime()) ? null : date;
+  const m = lstart.trim().match(/^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(\d{4})$/);
+  if (!m) return null;
+  const month = MONTHS.indexOf((m[1] ?? "").toLowerCase());
+  if (month === -1) return null;
+  return new Date(Number(m[6]), month, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+}
+
+/** Current working directory of each pid: lsof on macOS, /proc on Linux. */
+export async function cwdOf(pids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (!pids.length) return out;
+  if (process.platform === "linux") {
+    for (const pid of pids) {
+      try {
+        out.set(pid, fs.readlinkSync(`/proc/${pid}/cwd`));
+      } catch {
+        // Gone, or not ours to read.
+      }
+    }
+    return out;
+  }
+  try {
+    const { stdout } = await execFileAsync("lsof", ["-a", "-w", "-d", "cwd", "-p", pids.join(","), "-Fpn"], { maxBuffer: 8 * 1024 * 1024 });
+    let current: number | null = null;
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith("p")) current = Number(line.slice(1));
+      else if (line.startsWith("n") && current !== null) out.set(current, line.slice(1));
+    }
+  } catch (err) {
+    // lsof exits 1 when some pid has already gone; its stdout is still good.
+    const failure = err as { stdout?: string };
+    if (typeof failure.stdout === "string") {
+      let current: number | null = null;
+      for (const line of failure.stdout.split("\n")) {
+        if (line.startsWith("p")) current = Number(line.slice(1));
+        else if (line.startsWith("n") && current !== null) out.set(current, line.slice(1));
+      }
+    }
+  }
+  return out;
 }
 
 export function sleep(ms: number): Promise<void> {

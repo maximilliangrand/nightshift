@@ -35,7 +35,7 @@ export interface UsageTotals {
   rateLimits?: { fiveHour?: number; sevenDay?: number };
   terminalReason?: string;
   isError?: boolean;
-  priceSource: "none" | "list" | "reported";
+  priceSource: "none" | "list" | "ceiling" | "reported";
 }
 
 export interface Price {
@@ -64,6 +64,9 @@ export const LIST_PRICES: Record<string, Price> = {
   "claude-sonnet-4-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
 };
+
+/** Used for a model we have no row for, so a budget is never blind: the most expensive row. */
+export const CEILING_PRICE: Price = { input: 10, output: 50, cacheRead: 1, cacheWrite: 20 };
 
 function priceOverrides(): Record<string, Price> {
   const raw = process.env.NIGHTSHIFT_PRICES;
@@ -95,8 +98,8 @@ interface MessageUsage {
   cacheWrite: number;
 }
 
-export function costOf(usage: MessageUsage): number | null {
-  const price = priceFor(usage.model);
+export function costOf(usage: MessageUsage, fallback: Price | null = null): number | null {
+  const price = priceFor(usage.model) ?? fallback;
   if (!price) return null;
   return (
     (usage.input * price.input +
@@ -153,6 +156,18 @@ export class ClaudeStreamMeter {
       this.buffer = this.buffer.slice(newline + 1);
       if (line) this.line(line);
       newline = this.buffer.indexOf("\n");
+    }
+    // A complete event that never gets its newline must still count. If the
+    // buffer looks like a whole object, take it now rather than at exit.
+    const rest = this.buffer.trimEnd();
+    if (rest.startsWith("{") && rest.endsWith("}")) {
+      try {
+        JSON.parse(rest);
+      } catch {
+        return;
+      }
+      this.buffer = "";
+      this.line(rest);
     }
   }
 
@@ -227,17 +242,16 @@ export class ClaudeStreamMeter {
     t.totalTokens = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens;
     t.models[next.model] = (t.models[next.model] ?? 0) + (next.input + next.output - (prev ? prev.input + prev.output : 0));
 
-    const nextCost = costOf(next);
-    const prevCost = prev ? costOf(prev) : 0;
-    if (nextCost === null) {
-      if (!this.warnedModels.has(next.model)) {
-        this.warnedModels.add(next.model);
-        this.hooks.onUnpricedModel?.(next.model);
-      }
-      return;
+    if (!priceFor(next.model) && !this.warnedModels.has(next.model)) {
+      this.warnedModels.add(next.model);
+      this.hooks.onUnpricedModel?.(next.model);
     }
-    t.estimatedUsd += nextCost - (prevCost ?? 0);
-    if (t.priceSource === "none") t.priceSource = "list";
+    // An unknown model is priced at the ceiling rather than at zero, so a
+    // budget still fires; the report says the estimate was a ceiling.
+    const nextCost = costOf(next, CEILING_PRICE) ?? 0;
+    const prevCost = prev ? (costOf(prev, CEILING_PRICE) ?? 0) : 0;
+    t.estimatedUsd += nextCost - prevCost;
+    if (t.priceSource === "none") t.priceSource = priceFor(next.model) ? "list" : "ceiling";
   }
 
   private content(content: unknown): void {

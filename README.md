@@ -10,7 +10,7 @@ nightshift run --budget 5usd --max-runtime 2h --idle-timeout 15m --report telegr
 Zero dependencies. One command. Works with Claude Code, Codex, OpenClaw, Hermes, a shell script, anything you can start from a terminal.
 
 [![ci](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml/badge.svg)](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml)
-[![crash suite](https://img.shields.io/badge/crash_suite-16%2F16_failure_modes_caught-2ea44f)](docs/CRASHTEST.md)
+[![crash suite](https://img.shields.io/badge/crash_suite-20%2F20_failure_modes_caught-2ea44f)](docs/CRASHTEST.md)
 [![npm](https://img.shields.io/npm/v/nightshift)](https://www.npmjs.com/package/nightshift)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -92,7 +92,7 @@ Each of these is a kill, not a warning. The agent gets SIGTERM, a grace period, 
 | Flag | Stops the run when | Notes |
 |---|---|---|
 | `--max-runtime 2h` | it has run this long | wall clock |
-| `--idle-timeout 15m` | it prints nothing for this long | the hung-subprocess watchdog |
+| `--idle-timeout 15m` | it prints nothing for this long | the hung-subprocess watchdog; it measures silence, so pair it with `--max-runtime` and `--budget` for an agent that prints dots while doing nothing |
 | `--budget 5usd` | estimated spend reaches this | metered commands only, see below |
 | `--max-tokens 2M` | total tokens reach this | metered commands only |
 | `--max-disk-growth 2gb` | the volume loses this much free space, or a `--watch <dir>` grows this much | `df` is a smoke alarm, `du` on a watched dir is exact |
@@ -113,15 +113,16 @@ An agent that exits 0 without producing `out/report.json` gets outcome `postcond
 
 ## A kill that kills
 
-Most supervisors send one signal to one pid and hope. Agents spawn shells, which spawn tools, which spawn servers. nightshift casts three nets:
+Most supervisors send one signal to one pid and hope. Agents spawn shells, which spawn tools, which spawn servers. nightshift casts four nets:
 
 1. **The process group.** The agent runs as leader of its own group, so one signal reaches the whole tree.
 2. **The descendant map.** A `ps` tree walk at spawn, on every chunk of output and on every tick. Every pid is remembered with its start time, so a pid recycled by an unrelated process is dropped rather than signalled, and a grandchild that re-parented to `init` stays on the list.
 3. **The environment marker.** Every process nightshift starts inherits `NIGHTSHIFT_RUN_ID`. Anything still carrying it is ours, regardless of what it did to its group or parent (`ps -E` on macOS, `/proc/*/environ` on Linux).
+4. **The stray check.** A snapshot of the process table is taken before spawn. Anything that was not there then, started after the run began, has been re-parented to `init`, and still has the run's working directory as its cwd (`lsof` on macOS, `/proc/*/cwd` on Linux) is ours too. This is the net that catches a silent parent detaching `/bin/sleep` into a new session and exiting within a millisecond, which the red team did on its first try.
 
 The grace period is measured from the SIGTERM, not from when the direct child happened to exit: a `sh` wrapper dying instantly does not shorten the grace for the worker underneath it. After the agent exits on its own, the same nets sweep for orphans; anything found is killed and listed in the report. Anything that survives all of that is listed by pid under **Survivors**, in bold, because a kill that quietly did not kill is the worst outcome there is.
 
-The honest gaps, found by trying to break it: on macOS, Apple platform binaries (`/bin/sh`, `/bin/sleep`, `/usr/bin/tail`) never show their environment to `ps -E`, so net 3 does not see them; they are caught by nets 1 and 2. A platform binary that is detached into a new session by a parent that prints nothing and exits before the first tree walk (under 100 ms) escapes on macOS. On Linux, `/proc` sees everything of yours. Ctrl-C once stops gracefully, twice sends SIGKILL now, three times leaves without a report.
+The honest gap, found by trying to break it: on macOS, Apple platform binaries (`/bin/sh`, `/bin/sleep`, `/usr/bin/tail`) never show their environment to `ps -E`, so net 3 does not see them. A process escapes only if it is detached into a new session by a parent that prints nothing and exits before the first tree walk, *and* it scrubs or cannot show its environment, *and* it changes its working directory away from the run's. Every one of those steps has to be deliberate. On Linux, `/proc` shows environment and cwd for everything of yours. Ctrl-C once stops gracefully, twice sends SIGKILL now, three times leaves without a report.
 
 ## The ledger: side effects that happen once
 
@@ -132,7 +133,7 @@ Two of the incidents above were the same bug: an agent sent something it had alr
 nightshift ledger claim --scope telegram --key "listing-8812" --limit 40/day && send_listing 8812
 ```
 
-`claim` exits 0 once per key per scope, ever. The same key again is a **duplicate** (exit 3). The 41st claim in a sliding day is **capped** (exit 4). Refusals are recorded too, so the morning report can say "the ledger refused 16 sends". Several agents on one machine share the same ledger through a lock file; there is no database. A line damaged by a crash mid-write or a full disk is skipped and counted, never allowed to erase the history before it.
+`claim` exits 0 once per key per scope, ever (keys are trimmed and whitespace-collapsed, so `"listing-8812 "` from a sloppy `$(...)` is the same key). The same key again is a **duplicate** (exit 3). The 41st claim in a sliding day is **capped** (exit 4). Refusals are recorded too, so the morning report can say "the ledger refused 16 sends". Several agents on one machine share the same ledger through a lock file; there is no database. A line damaged by a crash mid-write or a full disk is skipped and counted, never allowed to erase the history before it.
 
 ### The Claude Code hook
 
@@ -141,7 +142,7 @@ For Claude Code you do not need to change the agent at all. Install the hook and
 ```bash
 nightshift hook install
 nightshift hook add --scope telegram --limit 40/day \
-  --match 'api\.telegram\.org/bot[^/]+/sendMessage' --note 'Telegram sends:'
+  --match 'api\.telegram\.org\.?/bot[^/]+/(send|forward|copy)' --note 'Telegram sends:'
 nightshift hook add --scope github-prs --match '^gh pr create'
 ```
 
@@ -149,7 +150,7 @@ Every matching `Bash` call is now claimed in the ledger before it runs. A duplic
 
 > nightshift ledger: Telegram sends: scope "telegram" is at its limit of 40/day (40 used). Stop sending; do not work around this limit.
 
-The hook fails open: if nightshift itself is broken, the call falls through to Claude Code's normal permission flow. The refusals are deterministic and come from the ledger, never from a model. `hook install` edits `~/.claude/settings.json` in place, keeps a `.bak`, and refuses to touch a file it cannot parse. The ledger stores the hash of the command, not the command, because the command is where the token lives.
+For a command no rule matches, the hook fails open: if nightshift itself is broken, the call falls through to Claude Code's normal permission flow. For a command a rule *did* match, it fails closed: if the ledger cannot record the claim (directory made unwritable, disk full), the send is denied, because a side effect that cannot be recorded cannot be deduplicated. The refusals are deterministic and come from the ledger, never from a model. Write your patterns for the family of calls, not one endpoint: the red team delivered through `sendPhoto` and `api.telegram.org.` (trailing dot) past a rule that only knew `sendMessage`. `hook install` edits `~/.claude/settings.json` in place, keeps a `.bak`, and refuses to touch a file it cannot parse. The ledger stores the hash of the command, not the command, because the command is where the token lives.
 
 ## Metering
 
@@ -158,7 +159,7 @@ nightshift knows how to read Claude Code's `--output-format stream-json`. When y
 Two things we learned by looking rather than assuming:
 
 - Claude Code emits one `assistant` event per content block, all carrying the same message id and the same usage. Summing naively double-counts by up to 2×. The meter keys usage by message id.
-- Dollars are only reported at the end (`total_cost_usd`). A budget that fires after the money is spent is not a budget, so spend is estimated live from tokens at list prices and reconciled against the reported figure when the run ends. The report shows both. The live estimate does not see thinking tokens until the result arrives, so it runs a few percent low; the reported figure is the bill.
+- Dollars are only reported at the end (`total_cost_usd`). A budget that fires after the money is spent is not a budget, so spend is estimated live from tokens at list prices and reconciled against the reported figure when the run ends. The report shows both. The live estimate does not see thinking tokens until the result arrives, so it runs a few percent low; the reported figure is the bill. A model with no list price is counted at the most expensive rate, so a budget is never blind to an unknown model id. An event that arrives without its trailing newline is counted as soon as it is a complete object.
 
 A dollar budget is also passed to Claude Code as `--max-budget-usd`, so the agent stops itself first and nightshift is the second line, not the only one. Override prices with `NIGHTSHIFT_PRICES='{"claude-opus-5":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":10}}'` (USD per million tokens).
 
@@ -181,7 +182,7 @@ export NIGHTSHIFT_WEBHOOK=https://your.server/nightshift     # receives report.j
 nightshift run --report telegram,discord -- ./job.sh
 ```
 
-Delivery happens before the report files are written, so a failed notification lands in the report's notes; it never turns a completed run into a failed one. The supervisor keeps these variables to itself: the agent's environment does not contain them, and anything the agent prints that looks like a token (Telegram bot tokens, bearer headers, `sk-` keys, webhook URLs, `token=` parameters) is redacted before it is stored or sent.
+Delivery happens before the report files are written, so a failed notification lands in the report's notes; it never turns a completed run into a failed one. The supervisor keeps these variables to itself: the agent's environment does not contain them, and anything the agent prints that looks like a token (Telegram bot tokens, bearer headers, `sk-` and `sk_live_` keys, Slack and Discord webhook URLs, `TOKEN=`/`password=` assignments, PEM private keys, JWTs) is redacted before it is stored or sent.
 
 ## Scheduling
 
@@ -205,29 +206,33 @@ Exit codes: `0` completed · `1` failed · `2` killed by a limit · `3` postcond
 
 ## The crash suite
 
-Claims about supervisors are cheap. `bun run crashtest` runs sixteen deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**.
+Claims about supervisors are cheap. `bun run crashtest` runs twenty deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**.
 
 ```
-nightshift crash suite · 16 failure modes
+nightshift crash suite · 20 failure modes
 
   hang             goes silent forever                  ✅ idle-timeout: silent for 2s, limit 2s (2.4s)
-  runaway          never finishes                       ✅ max-runtime: ran for 2s, limit 2s (2.3s)
-  ignore-sigterm   traps SIGTERM                        ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.8s)
+  runaway          never finishes                       ✅ max-runtime: ran for 2s, limit 2s (2.4s)
+  ignore-sigterm   traps SIGTERM                        ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.7s)
   fast-orphan      detaches a child, exits in 60ms      ✅ exit 0; killed 1 orphan (0.2s)
-  wrapper-shell    sh wrapper dies, worker ignores TERM ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.7s)
-  spawn-fail       command does not exist               ✅ failed in 1ms (0.0s)
+  wrapper-shell    sh wrapper dies, worker ignores TERM ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.8s)
+  spawn-fail       command does not exist               ✅ failed in 19ms (0.1s)
+  silent-orphan    detaches /bin/sleep, exits silently  ✅ exit 0; killed 1 orphan (0.2s)
+  grace-spawner    spawns /bin/sleep from its SIGTERM handler ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (4.7s)
+  unpriced-model   spends on a model with no price      ✅ budget: $2.00 spent (estimated), limit $2.00 (0.5s)
+  noeol-stream     one huge event, no newline           ✅ max-tokens: 900k tokens used, limit 300k (0.3s)
   orphan           detaches a child, exits 0            ✅ exit 0; killed 1 orphan (1.7s)
-  fork-bomb-lite   30 children, then silence            ✅ idle-timeout: silent for 2s, limit 2s (2.3s)
-  disk-filler      fills the disk                       ✅ max-disk-growth: grew 98MB, limit 30MB (2.9s)
-  output-flood     floods stdout                        ✅ max-output: 8.2MB of output, limit 8.0MB (0.4s)
-  budget-blower    spends without limit                 ✅ budget: $2.00 spent (estimated), limit $2.00 (0.7s)
+  fork-bomb-lite   30 children, then silence            ✅ idle-timeout: silent for 2s, limit 2s (2.4s)
+  disk-filler      fills the disk                       ✅ max-disk-growth: grew 118MB, limit 30MB (3.4s)
+  output-flood     floods stdout                        ✅ max-output: 8.0MB of output, limit 8.0MB (0.4s)
+  budget-blower    spends without limit                 ✅ budget: $2.00 spent (estimated), limit $2.00 (0.8s)
   token-blower     burns tokens                         ✅ max-tokens: 300k tokens used, limit 300k (0.6s)
-  send-loop        sends 21 messages                    ✅ ledger allowed 5, refused 16 (0.5s)
-  kill-file        must be stopped by hand              ✅ kill-file: kill file present (2.8s)
+  send-loop        sends 21 messages                    ✅ ledger allowed 5, refused 16 (0.6s)
+  kill-file        must be stopped by hand              ✅ kill-file: kill file present (2.9s)
   postcondition    claims success, produced nothing     ✅ exit 0 but path out.json missing → exit 3 (0.1s)
-  stdin-waiter     waits for a keyboard                 ✅ completed in 16ms (0.1s)
+  stdin-waiter     waits for a keyboard                 ✅ completed in 38ms (0.1s)
 
-16/16 failure modes caught
+20/20 failure modes caught
 ```
 
 It runs in CI on macOS and Linux. Add a case when you meet a new way for an agent to go wrong; see [docs/CRASHTEST.md](docs/CRASHTEST.md).
@@ -244,7 +249,7 @@ It runs in CI on macOS and Linux. Add a case when you meet a new way for an agen
 - Every exit path writes a report, including the ones where the agent was killed or the supervisor received SIGINT.
 - Everything that can fail open does (notifications, the hook). Everything that must fail closed does (an unmeasurable budget refuses to start).
 - The samples in this README are from real runs on 2026-09-02, abridged where marked. Re-run them: `bun test && bun run crashtest`.
-- Before the first release the code was reviewed by four independent reviewers and every finding was adversarially re-verified by two more; 31 confirmed defects were fixed, and three red-team agents then spent their time trying to escape the supervisor. The gaps they found are the ones stated above.
+- Before the first release the code was reviewed by four independent reviewers and every finding was adversarially re-verified by two more; 31 confirmed defects were fixed. Three red-team agents then attacked the result: two escaped the kill through a silent detach that the first three nets could not see, one found the budget blind to unknown model ids, the meter blind to an event without a newline, and the hook failing open on an unwritable ledger. Each of those is now a case in the crash suite, and the fourth net exists because of them.
 
 ## Development
 
@@ -252,7 +257,7 @@ It runs in CI on macOS and Linux. Add a case when you meet a new way for an agen
 git clone https://github.com/maximilliangrand/nightshift && cd nightshift
 bun install
 bun test              # unit tests
-bun run crashtest     # the sixteen misbehaving cases
+bun run crashtest     # the twenty misbehaving cases
 bun run build         # dist/ for node
 ```
 

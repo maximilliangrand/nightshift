@@ -9,11 +9,15 @@ const REPLACEMENTS: Array<[RegExp, string]> = [
   [/https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/g, "https://discord.com/api/webhooks/[redacted]"],
   [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/g, "$1 [redacted]"],
   [/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}/g, "sk-[redacted]"],
+  [/\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/g, "sk_[redacted]"],
+  [/https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9]+\/[A-Za-z0-9]+\/[A-Za-z0-9]+/g, "https://hooks.slack.com/services/[redacted]"],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted private key]"],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[redacted jwt]"],
   [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, "xox[redacted]"],
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "gh_[redacted]"],
   [/\bAKIA[0-9A-Z]{16}\b/g, "AKIA[redacted]"],
   [/([?&;,]\s*(?:token|key|secret|password|passwd|pwd|api[_-]?key|access[_-]?token|auth)=)[^\s&"']+/gi, "$1[redacted]"],
-  [/(\b(?:[a-z-]*(?:token|secret|key|auth|password)[a-z-]*)[=:]\s*["']?)[A-Za-z0-9._~+/=-]{8,}/gi, "$1[redacted]"],
+  [/(\b(?:[a-z0-9_-]*(?:token|secret|key|auth|password|passwd|pwd)[a-z0-9_-]*)[=:]\s*["']?)[A-Za-z0-9._~+/=-]{8,}/gi, "$1[redacted]"],
 ];
 
 export function redact(text: string): string {

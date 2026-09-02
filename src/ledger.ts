@@ -16,6 +16,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { UsageError } from "./errors.js";
 import { ledgerDir, ensureDirs, isProcessAlive } from "./store.js";
 import type { Rate } from "./units.js";
 import { sleep } from "./supervisor.js";
@@ -136,15 +137,22 @@ export interface ClaimOptions {
   now?: number;
 }
 
+/** "listing-8812 " and "listing-8812" are the same send. */
+export function normalizeKey(key: string): string {
+  return key.replace(/\s+/g, " ").trim();
+}
+
 export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   ensureDirs();
   const file = scopeFile(opts.scope);
   const now = opts.now ?? Date.now();
+  const key = normalizeKey(opts.key);
+  if (!key) throw new UsageError("Ledger key must not be empty");
   return withLock(file, () => {
     const { entries, corrupt } = readLedgerFile(opts.scope);
     const okEntries = entries.filter((e) => e.ok);
-    const duplicate = okEntries.find((e) => e.key === opts.key);
-    const base: LedgerEntry = { key: opts.key, ts: new Date(now).toISOString(), ok: true };
+    const duplicate = okEntries.find((e) => normalizeKey(e.key) === key);
+    const base: LedgerEntry = { key, ts: new Date(now).toISOString(), ok: true };
     if (opts.run) base.run = opts.run;
     if (opts.meta) base.meta = opts.meta;
     const withCorrupt = <R extends object>(r: R): R & { corrupt?: number } => (corrupt ? { ...r, corrupt } : r);

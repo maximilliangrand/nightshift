@@ -86,12 +86,16 @@ describe("ClaudeStreamMeter", () => {
     expect(texts).toEqual(["plain output\n", "{not json\n"]);
   });
 
-  test("flushes a trailing partial line on end()", () => {
+  test("a complete object without a newline is counted immediately; end() flushes the rest", () => {
     const meter = new ClaudeStreamMeter();
     meter.feed(JSON.stringify(message([])));
-    expect(meter.totals.messages).toBe(0);
-    meter.end();
     expect(meter.totals.messages).toBe(1);
+    const texts: string[] = [];
+    const late = new ClaudeStreamMeter({ onText: (t) => texts.push(t) });
+    late.feed("trailing words");
+    expect(texts).toEqual([]);
+    late.end();
+    expect(texts).toEqual(["trailing words\n"]);
   });
 });
 

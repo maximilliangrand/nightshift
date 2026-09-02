@@ -187,7 +187,7 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
     onStderr,
   });
   const startedAt = Date.now();
-  const pid = supervisor.start();
+  const pid = await supervisor.start();
   const perRunStop = path.join(dir, "stop");
   const globalStop = path.join(nightshiftHome(), "stop");
 

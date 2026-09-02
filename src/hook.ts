@@ -9,9 +9,12 @@
  * that would have sent the same message twenty times sends it once and is
  * told why the rest were refused.
  *
- * The hook fails open. If our own code throws, the call falls through to
- * Claude Code's normal permission flow rather than blocking the agent on a
- * bug in the safety net. Refusals are the ledger's job and are deterministic.
+ * The hook fails open for commands no rule matches: malformed input or a
+ * broken config falls through to Claude Code's normal permission flow. It
+ * fails closed for a command a rule *did* match: if the ledger cannot record
+ * the claim (directory unwritable, disk full), the send is denied, because a
+ * side effect that cannot be recorded cannot be deduplicated or rate-limited,
+ * and the whole point is that those never run unguarded.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -94,7 +97,17 @@ export async function decide(
     // may carry a token in its URL and is not stored.
     const meta: Record<string, unknown> = { rule: rule.note ?? rule.match };
     if (input.session_id) meta.session = input.session_id;
-    const result = await claimFn(rule.scope, key, limit, meta);
+    let result: Awaited<ReturnType<typeof claim>>;
+    try {
+      result = await claimFn(rule.scope, key, limit, meta);
+    } catch (err) {
+      return {
+        decision: "deny",
+        rule,
+        key,
+        reason: `nightshift ledger: cannot record this side effect (${(err as Error).message}). Refusing to run it unguarded; tell the operator the ledger is unavailable.`,
+      };
+    }
     if (result.ok) return { decision: "allow", rule, key };
     const what = rule.note ? `${rule.note} ` : "";
     const reason =

@@ -205,6 +205,8 @@ function spendLines(u: UsageTotals): string[] {
     lines.push(`- **${fmtMoney(u.actualUsd)}** reported by Claude Code${drift}${model}`);
   } else if (u.priceSource === "list") {
     lines.push(`- **~${fmtMoney(u.estimatedUsd)}** estimated from list prices${model} (run did not reach a result event)`);
+  } else if (u.priceSource === "ceiling") {
+    lines.push(`- **~${fmtMoney(u.estimatedUsd)}** estimated at ceiling prices${model}: no list price for this model, so it was counted at the most expensive rate`);
   } else {
     lines.push(`- Cost unknown: no price for${model || " this model"}`);
   }

@@ -1,5 +1,5 @@
 /**
- * The crash suite. Sixteen cases of agents that misbehave the way real ones did, each
+ * The crash suite. Twenty cases of agents that misbehave the way real ones did, each
  * run under nightshift with the limit that should catch it. A case passes
  * only if the report says what happened *and* nothing is left running.
  *
@@ -35,6 +35,7 @@ interface Case {
   /** null: run a command that does not exist */
   agent: string | null;
   limits: string[];
+  env?: Record<string, string>;
   during?: (ctx: { home: string; cwd: string }) => Promise<void>;
   expect: (r: Report, exitCode: number | null) => string | null;
 }
@@ -94,6 +95,38 @@ const CASES: Case[] = [
       r.exitCode !== 127 ? `exit code in report ${r.exitCode}, wanted 127` :
       !r.failedToStart ? "report does not say the command failed to start" :
       code !== 1 ? `nightshift exit ${code}, wanted 1` : null,
+  },
+  {
+    name: "silent-orphan",
+    failure: "detaches /bin/sleep, exits silently",
+    agent: "silent-orphan.ts",
+    limits: ["--max-runtime", "20s"],
+    expect: (r) =>
+      r.outcome !== "completed" ? `outcome ${r.outcome}, wanted completed` :
+      !r.orphans?.found.length ? "orphan was not noticed" :
+      r.survivors.length ? `survivors ${r.survivors.join(",")}` : null,
+  },
+  {
+    name: "grace-spawner",
+    failure: "spawns /bin/sleep from its SIGTERM handler",
+    agent: "grace-spawner.ts",
+    limits: ["--max-runtime", "2s", "--grace", "2s"],
+    expect: killedBy("max-runtime"),
+  },
+  {
+    name: "unpriced-model",
+    failure: "spends on a model with no price",
+    agent: "budget-blower.ts",
+    env: { CRASH_MODEL: "claude-zorp-9" },
+    limits: ["--adapter", "claude", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: killedBy("budget"),
+  },
+  {
+    name: "noeol-stream",
+    failure: "one huge event, no newline",
+    agent: "noeol-stream.ts",
+    limits: ["--adapter", "claude", "--max-tokens", "300k", "--max-runtime", "30s"],
+    expect: killedBy("max-tokens"),
   },
   {
     name: "orphan",
@@ -187,7 +220,7 @@ async function runCase(c: Case): Promise<{ ok: boolean; detail: string; ms: numb
   const agent = c.agent ? path.join(AGENTS, c.agent) : "/nonexistent/nightshift-crashtest-missing-binary";
   const runner = c.agent === null ? [agent] : c.agent.endsWith(".sh") ? ["sh", agent] : ["bun", agent];
   const args = [CLI, "run", "--quiet", "--tick", "500ms", "--name", c.name, ...c.limits, "--", ...runner];
-  const env = { ...process.env, NIGHTSHIFT_HOME: home, NIGHTSHIFT_BIN: `bun ${CLI}` };
+  const env = { ...process.env, NIGHTSHIFT_HOME: home, NIGHTSHIFT_BIN: `bun ${CLI}`, ...(c.env ?? {}) };
   const started = Date.now();
 
   const child = spawn("bun", args, { cwd, env, stdio: ["ignore", "ignore", "pipe"] });
@@ -230,7 +263,7 @@ function leakedProcesses(agent: string, cwd: string): string[] {
   const out = execFileSync("ps", ["-axo", "pid=,ppid=,stat=,command="], { encoding: "utf8" });
   return out
     .split("\n")
-    .filter((l) => (l.includes(agent) || l.includes(cwd)) && !/^\s*\d+\s+\d+\s+Z/.test(l))
+    .filter((l) => (l.includes(agent) || l.includes(cwd) || / sleep 4[234]4[23]\b/.test(l)) && !/^\s*\d+\s+\d+\s+Z/.test(l))
     .map((l) => l.trim().slice(0, 100));
 }
 
