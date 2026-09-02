@@ -29,7 +29,7 @@ import {
   type Verdict,
 } from "./guards.js";
 import { entriesForRun } from "./ledger.js";
-import { emptyUsage, resolveAdapter, type Meter, type UsageTotals } from "./meters/index.js";
+import { ADAPTERS, emptyUsage, resolveAdapter, type Meter, type UsageTotals } from "./meters/index.js";
 import { DiskMeter } from "./meters/disk.js";
 import { notify, type Channel } from "./notify.js";
 import { childEnv, redact } from "./redact.js";
@@ -95,7 +95,8 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
     if (!opts.allowUnmetered) {
       throw new UsageError(
         `--budget and --max-tokens need a metered command, and nightshift cannot read usage from "${opts.command[0]}". ` +
-          `Use --adapter claude if this is Claude Code under another name, or --allow-unmetered to run with the other limits only.`,
+          `Use --adapter ${ADAPTERS.map((a) => a.name).join("|")} if the command speaks one of those formats under another name, ` +
+          `or --allow-unmetered to run with the other limits only.`,
       );
     }
     notes.push("spend limits were requested but this command is unmetered; they did not apply");

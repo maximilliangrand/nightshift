@@ -1,6 +1,6 @@
 # The OpenClaw adapter
 
-`--adapter auto` picks this adapter for any command whose basename is `openclaw` and whose subcommand is `agent` (global options such as `--profile work` may come first). `--adapter openclaw` forces it onto anything that prints the same JSON.
+`--adapter auto` picks this adapter for any command whose basename is `openclaw` (or `openclaw.mjs`, the file npm's shim points at) and whose subcommand is `agent` (global options such as `--profile work` may come first). `--adapter openclaw` forces it onto anything that prints the same JSON.
 
 ```bash
 nightshift run --budget 3usd --max-runtime 1h --report telegram \
