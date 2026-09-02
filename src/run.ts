@@ -29,7 +29,7 @@ import {
   type Verdict,
 } from "./guards.js";
 import { entriesForRun } from "./ledger.js";
-import { ClaudeStreamMeter, emptyUsage, instrumentClaudeArgv, isClaudeCommand, type UsageTotals } from "./meters/claude.js";
+import { emptyUsage, resolveAdapter, type Meter, type UsageTotals } from "./meters/index.js";
 import { DiskMeter } from "./meters/disk.js";
 import { notify, type Channel } from "./notify.js";
 import { childEnv, redact } from "./redact.js";
@@ -56,7 +56,8 @@ export interface RunOptions {
   graceMs: number;
   tickMs: number;
   stdin: "ignore" | "inherit";
-  adapter: "auto" | "claude" | "none";
+  /** auto, none, or an adapter name from the registry. */
+  adapter: string;
   allowUnmetered: boolean;
   channels: Channel[];
   quiet: boolean;
@@ -79,12 +80,12 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
   const notes: string[] = [];
 
   // 1. adapter + instrumentation
-  const useClaude = opts.adapter === "claude" || (opts.adapter === "auto" && isClaudeCommand(opts.command));
+  const resolved = resolveAdapter(opts.adapter, opts.command);
   let effective = opts.command;
   let renders = false;
   let metered = false;
-  if (useClaude) {
-    const inst = instrumentClaudeArgv(opts.command, { budgetUsd: opts.budgetUsd, forced: opts.adapter === "claude" });
+  if (resolved) {
+    const inst = resolved.adapter.instrument(opts.command, { budgetUsd: opts.budgetUsd, forced: resolved.forced });
     effective = inst.argv;
     renders = inst.renders;
     metered = inst.metered;
@@ -124,7 +125,8 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
     }
   };
 
-  const meter = new ClaudeStreamMeter({
+  const noMeter: Meter = { totals: emptyUsage(), feed: () => {}, end: () => {} };
+  const meter: Meter = !resolved ? noMeter : resolved.adapter.createMeter({
     onText: renders
       ? (text) => {
           log.write(text);
@@ -135,7 +137,7 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
     onEvent: (line) => events?.write(line + "\n"),
     onUnpricedModel: (model) => notes.push(`no list price for ${model}; live budget could not count its tokens`),
   });
-  const usage: UsageTotals = metered ? meter.totals : emptyUsage();
+  const usage: UsageTotals = meter.totals;
 
   // Guards that are pure arithmetic over the context run on every chunk as
   // well as on the tick: a flood of output or a burst of spend should be

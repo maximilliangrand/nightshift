@@ -15,28 +15,9 @@
  *    against the reported figure when the run ends. The report shows both.
  */
 import { redact } from "../redact.js";
+import { basename, emptyUsage, forcedInstrumentation, type Adapter, type Instrumentation, type Meter, type MeterHooks, type UsageTotals } from "./adapter.js";
 
-export interface UsageTotals {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-  estimatedUsd: number;
-  actualUsd?: number;
-  model?: string;
-  models: Record<string, number>;
-  sessionId?: string;
-  messages: number;
-  turns: number;
-  toolCalls: Record<string, number>;
-  filesWritten: string[];
-  commands: string[];
-  rateLimits?: { fiveHour?: number; sevenDay?: number };
-  terminalReason?: string;
-  isError?: boolean;
-  priceSource: "none" | "list" | "ceiling" | "reported";
-}
+export { emptyUsage, type UsageTotals };
 
 export interface Price {
   /** USD per million tokens */
@@ -110,36 +91,11 @@ export function costOf(usage: MessageUsage, fallback: Price | null = null): numb
   );
 }
 
-export function emptyUsage(): UsageTotals {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: 0,
-    estimatedUsd: 0,
-    models: {},
-    messages: 0,
-    turns: 0,
-    toolCalls: {},
-    filesWritten: [],
-    commands: [],
-    priceSource: "none",
-  };
-}
-
-export interface ClaudeMeterHooks {
-  /** Called with readable text when nightshift is rendering the stream itself. */
-  onText?: (text: string) => void;
-  /** Every parsed event, for the events.jsonl file. */
-  onEvent?: (line: string) => void;
-  /** A model we have no price for. Fired once per model. */
-  onUnpricedModel?: (model: string) => void;
-}
+export type ClaudeMeterHooks = MeterHooks;
 
 const MAX_COMMANDS_KEPT = 200;
 
-export class ClaudeStreamMeter {
+export class ClaudeStreamMeter implements Meter {
   readonly totals = emptyUsage();
   private buffer = "";
   private perMessage = new Map<string, MessageUsage>();
@@ -339,17 +295,8 @@ function num(value: unknown): number {
 /** Is this argv a Claude Code invocation? */
 export function isClaudeCommand(argv: string[]): boolean {
   const file = argv[0] ?? "";
-  const base = file.split("/").pop() ?? "";
-  return base === "claude" || base === "claude.js" || base === "cli.js" && file.includes("claude");
-}
-
-export interface Instrumentation {
-  argv: string[];
-  /** nightshift added stream-json itself and will render the stream. */
-  renders: boolean;
-  /** stream-json is on, one way or the other; the meter can read it. */
-  metered: boolean;
-  notes: string[];
+  const base = basename(argv);
+  return base === "claude" || base === "claude.js" || (base === "cli.js" && file.includes("claude"));
 }
 
 /**
@@ -364,11 +311,7 @@ export function instrumentClaudeArgv(argv: string[], opts: { budgetUsd?: number;
   const notes: string[] = [];
   const args = [...argv];
   const isPrint = args.includes("-p") || args.includes("--print");
-  if (opts.forced && !isClaudeCommand(args)) {
-    // The caller says this command speaks stream-json on stdout. Believe them,
-    // touch nothing, and meter what arrives.
-    return { argv: args, renders: false, metered: true, notes: ["adapter forced to claude: expecting stream-json on stdout"] };
-  }
+  if (opts.forced && !isClaudeCommand(args)) return forcedInstrumentation(args, "claude");
   const formatIndex = args.findIndex((a) => a === "--output-format" || a.startsWith("--output-format="));
   const format =
     formatIndex === -1
@@ -399,3 +342,10 @@ export function instrumentClaudeArgv(argv: string[], opts: { budgetUsd?: number;
   }
   return { argv: args, renders, metered, notes };
 }
+
+export const claudeAdapter: Adapter = {
+  name: "claude",
+  matches: isClaudeCommand,
+  instrument: instrumentClaudeArgv,
+  createMeter: (hooks) => new ClaudeStreamMeter(hooks),
+};

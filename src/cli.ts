@@ -19,6 +19,7 @@ import { UsageError } from "./errors.js";
 import { installIntoClaudeSettings, readHookConfig, runHook, uninstallFromClaudeSettings, writeHookConfig } from "./hook.js";
 import { claim, listScopes, readLedger, resetScope, summarize } from "./ledger.js";
 import { CHANNELS, type Channel } from "./notify.js";
+import { ADAPTER_NAMES } from "./meters/index.js";
 import { EXIT_CODES, runSupervised, type RunOptions } from "./run.js";
 import { isProcessAlive, listRuns, readMeta, resolveRunId, runDir, writeMeta, type RunMeta } from "./store.js";
 import { groupMembers, parseStarted, pidsWithEnv, processTable } from "./supervisor.js";
@@ -70,9 +71,11 @@ BEHAVIOUR
   --grace <dur>             SIGTERM to SIGKILL escalation (default 10s)
   --tick <dur>              guard poll interval (default 1s)
   --stdin inherit|ignore    give the agent your terminal's stdin (default: ignore)
-  --adapter auto|claude|none  usage adapter (default: auto by command name)
+  --adapter <name>          usage adapter: auto (by command name), none, or one of the adapters below
   --allow-unmetered         keep going when --budget/--max-tokens cannot be measured
   --cwd <dir>               run there instead of here
+
+ADAPTERS  ${ADAPTER_NAMES.filter((n) => n !== "auto" && n !== "none").join(", ")}
 
 EXIT CODES
   run:           0 completed · 1 failed · 2 killed by a limit · 3 postcondition failed
@@ -176,7 +179,7 @@ async function cmdRun(args: string[]): Promise<number> {
     graceMs: values.grace ? parseDuration(values.grace) : 10_000,
     tickMs: values.tick ? parseDuration(values.tick) : 1_000,
     stdin: oneOf("stdin", values.stdin, ["ignore", "inherit"] as const, "ignore"),
-    adapter: oneOf("adapter", values.adapter, ["auto", "claude", "none"] as const, "auto"),
+    adapter: oneOf("adapter", values.adapter, ADAPTER_NAMES, "auto"),
     allowUnmetered: Boolean(values["allow-unmetered"]),
     channels,
     quiet: Boolean(values.quiet),
