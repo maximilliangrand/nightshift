@@ -1,0 +1,73 @@
+name: My agent escaped
+description: An agent got past nightshift, or was not caught the way the report says. This becomes a case in the crash suite.
+title: "escape: "
+labels: ["failure-mode"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. An accepted escape becomes a case in `bun run crashtest` before it is fixed, so the more exactly you describe what the agent did, the sooner the suite goes red and then green. See [docs/CASES.md](https://github.com/maximilliangrand/nightshift/blob/main/docs/CASES.md) for the cases that exist.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What the agent did
+      description: What was still running, still spending, still sending, or still growing after nightshift said it had stopped or finished? What did you expect instead?
+      placeholder: A `python worker.py` the agent had started was still running twenty minutes after the report said killed by max-runtime.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The nightshift command and limits
+      description: The exact `nightshift run ...` line, including every limit and the agent command after `--`. Redact tokens; nightshift redacts its own output but not what you paste here.
+      render: shell
+      placeholder: nightshift run --budget 5usd --max-runtime 2h --idle-timeout 15m -- claude -p "..."
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: report.md
+      description: The run's `report.md` from `~/.nightshift/runs/<id>/`, or `nightshift report <id>`. Survivors, orphans and notes are the parts that matter most.
+      render: markdown
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: nightshift version
+      description: "`nightshift --version`, and whether it ran under node or bun."
+      placeholder: 0.1.0 under node 20
+  - type: textarea
+    id: agent
+    attributes:
+      label: A minimal reproducing agent
+      description: The smallest script that misbehaves the same way, ideally under twenty lines, so it can go straight into `crashtest/agents/`. A TypeScript file run with `bun`, or a shell script, matching the ones already there.
+      render: ts
+      placeholder: |
+        // detaches a worker into a new session, prints nothing, exits at once
+        import { spawn } from "node:child_process";
+        const child = spawn("python3", ["worker.py"], { detached: true, stdio: "ignore" });
+        child.unref();
+        process.exit(0);
+    validations:
+      required: true
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the cases in docs/CASES.md and this is not one of them.
+          required: true
+        - label: I am fine with the reproducing agent becoming a case in the suite under the MIT license.
+          required: true

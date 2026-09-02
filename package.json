@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test test/",
     "crashtest": "bun run crashtest/run.ts",
+    "cases": "bun run crashtest/run.ts --list",
     "prepublishOnly": "npm run build && npm test && npm run crashtest"
   },
   "devDependencies": {

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   check:
@@ -14,6 +15,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The scoreboard check reads which commit added each case.
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -25,5 +29,23 @@ jobs:
       - run: bun test
       - run: bun run build
       - run: node dist/cli.js --version
+      - name: scoreboard is in step with the suite
+        run: bun scripts/cases.ts --check
       - name: crash suite
-        run: bun run crashtest
+        shell: bash
+        run: |
+          set -o pipefail
+          CRASHTEST_MARKDOWN=1 bun run crashtest | tee crashtest.log
+      - name: crash suite summary
+        # Runs after a red suite too: the table is the point when something escaped.
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### crash suite on ${{ matrix.os }}"
+            echo
+            grep -E '^\|' crashtest.log || echo "no table: the suite did not finish"
+            echo
+            grep -E 'failure modes caught' crashtest.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"

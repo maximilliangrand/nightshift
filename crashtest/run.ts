@@ -1,9 +1,16 @@
 /**
- * The crash suite. Twenty cases of agents that misbehave the way real ones did, each
- * run under nightshift with the limit that should catch it. A case passes
- * only if the report says what happened *and* nothing is left running.
+ * The crash suite. Agents that misbehave the way real ones did, each run
+ * under nightshift with the limit that should catch it. A case passes only
+ * if the report says what happened *and* nothing is left running.
  *
- *   bun run crashtest
+ *   bun run crashtest            run every case
+ *   bun run crashtest <name>     run one
+ *   bun run crashtest --list     print the cases table without running
+ *
+ * CASES is the single source for the scoreboard in docs/CASES.md and the
+ * count in the README; `bun scripts/cases.ts --check` keeps them in step.
+ * Every case says what catches it and where it came from, because a suite
+ * that cannot explain itself is a list of tests, not a record of failures.
  */
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -29,9 +36,16 @@ interface Report {
   disk: { watched: Record<string, number> };
 }
 
-interface Case {
+/** Where a case came from. New cases from the issue tracker use `issue #N`. */
+export type Origin = "incident" | "design" | "review" | "red team" | `issue #${number}`;
+
+export interface Case {
   name: string;
+  /** What the agent does, in a few words; the second column of the scoreboard. */
   failure: string;
+  /** What stops it: the flag, the net, or the mechanism. */
+  caught: string;
+  origin: Origin;
   /** null: run a command that does not exist */
   agent: string | null;
   limits: string[];
@@ -46,10 +60,12 @@ const killedBy = (guard: string) => (r: Report, code: number | null) =>
   r.survivors.length ? `survivors ${r.survivors.join(",")}` :
   code !== 2 ? `exit code ${code}, wanted 2` : null;
 
-const CASES: Case[] = [
+export const CASES: Case[] = [
   {
     name: "hang",
     failure: "goes silent forever",
+    caught: "`--idle-timeout`",
+    origin: "incident",
     agent: "hang.ts",
     limits: ["--idle-timeout", "2s", "--max-runtime", "30s"],
     expect: killedBy("idle-timeout"),
@@ -57,6 +73,8 @@ const CASES: Case[] = [
   {
     name: "runaway",
     failure: "never finishes",
+    caught: "`--max-runtime`",
+    origin: "design",
     agent: "runaway.ts",
     limits: ["--max-runtime", "2s"],
     expect: killedBy("max-runtime"),
@@ -64,6 +82,8 @@ const CASES: Case[] = [
   {
     name: "ignore-sigterm",
     failure: "traps SIGTERM",
+    caught: "`--max-runtime`, escalates to SIGKILL",
+    origin: "design",
     agent: "ignore-sigterm.ts",
     limits: ["--max-runtime", "2s", "--grace", "1s"],
     expect: (r, code) => killedBy("max-runtime")(r, code) ?? (r.kill?.escalatedToSigkill ? null : "did not escalate to SIGKILL"),
@@ -71,6 +91,8 @@ const CASES: Case[] = [
   {
     name: "fast-orphan",
     failure: "detaches a child, exits in 60ms",
+    caught: "descendant walk on the output chunk, then the orphan sweep",
+    origin: "review",
     agent: "fast-orphan.ts",
     limits: ["--max-runtime", "20s"],
     expect: (r) =>
@@ -81,6 +103,8 @@ const CASES: Case[] = [
   {
     name: "wrapper-shell",
     failure: "sh wrapper dies, worker ignores TERM",
+    caught: "grace measured from the SIGTERM, then SIGKILL for the worker",
+    origin: "review",
     agent: "wrapper-shell.sh",
     limits: ["--max-runtime", "2s", "--grace", "1s"],
     expect: (r, code) => killedBy("max-runtime")(r, code) ?? (r.kill?.escalatedToSigkill ? null : "did not escalate to SIGKILL"),
@@ -88,6 +112,8 @@ const CASES: Case[] = [
   {
     name: "spawn-fail",
     failure: "command does not exist",
+    caught: "outcome `failed`, exit 127 in the report, report still written",
+    origin: "review",
     agent: null,
     limits: ["--max-runtime", "5s"],
     expect: (r, code) =>
@@ -99,6 +125,8 @@ const CASES: Case[] = [
   {
     name: "silent-orphan",
     failure: "detaches /bin/sleep, exits silently",
+    caught: "the stray check: new since spawn, re-parented to init, cwd is the run's",
+    origin: "red team",
     agent: "silent-orphan.ts",
     limits: ["--max-runtime", "20s"],
     expect: (r) =>
@@ -109,6 +137,8 @@ const CASES: Case[] = [
   {
     name: "grace-spawner",
     failure: "spawns /bin/sleep from its SIGTERM handler",
+    caught: "second SIGKILL wave, then the stray check",
+    origin: "red team",
     agent: "grace-spawner.ts",
     limits: ["--max-runtime", "2s", "--grace", "2s"],
     expect: killedBy("max-runtime"),
@@ -116,6 +146,8 @@ const CASES: Case[] = [
   {
     name: "unpriced-model",
     failure: "spends on a model with no price",
+    caught: "`--budget`, counted at the ceiling price",
+    origin: "red team",
     agent: "budget-blower.ts",
     env: { CRASH_MODEL: "claude-zorp-9" },
     limits: ["--adapter", "claude", "--budget", "2usd", "--max-runtime", "30s"],
@@ -124,6 +156,8 @@ const CASES: Case[] = [
   {
     name: "noeol-stream",
     failure: "one huge event, no newline",
+    caught: "`--max-tokens`, a complete object is parsed without waiting for a newline",
+    origin: "red team",
     agent: "noeol-stream.ts",
     limits: ["--adapter", "claude", "--max-tokens", "300k", "--max-runtime", "30s"],
     expect: killedBy("max-tokens"),
@@ -131,6 +165,8 @@ const CASES: Case[] = [
   {
     name: "orphan",
     failure: "detaches a child, exits 0",
+    caught: "orphan sweep after exit",
+    origin: "design",
     agent: "orphan.ts",
     limits: ["--max-runtime", "20s"],
     expect: (r) =>
@@ -141,6 +177,8 @@ const CASES: Case[] = [
   {
     name: "fork-bomb-lite",
     failure: "30 children, then silence",
+    caught: "`--idle-timeout`, the whole group dies",
+    origin: "design",
     agent: "fork-bomb-lite.ts",
     limits: ["--idle-timeout", "2s"],
     expect: killedBy("idle-timeout"),
@@ -148,6 +186,8 @@ const CASES: Case[] = [
   {
     name: "disk-filler",
     failure: "fills the disk",
+    caught: "`--max-disk-growth --watch .`",
+    origin: "incident",
     agent: "disk-filler.ts",
     limits: ["--max-disk-growth", "30mb", "--watch", ".", "--max-runtime", "30s"],
     expect: killedBy("max-disk-growth"),
@@ -155,6 +195,8 @@ const CASES: Case[] = [
   {
     name: "output-flood",
     failure: "floods stdout",
+    caught: "`--max-output`, checked per chunk",
+    origin: "incident",
     agent: "output-flood.ts",
     limits: ["--max-output", "8mb", "--max-runtime", "30s"],
     expect: killedBy("max-output"),
@@ -162,6 +204,8 @@ const CASES: Case[] = [
   {
     name: "budget-blower",
     failure: "spends without limit",
+    caught: "`--budget`, per-message dedupe",
+    origin: "design",
     agent: "budget-blower.ts",
     limits: ["--adapter", "claude", "--budget", "2usd", "--max-runtime", "30s"],
     expect: (r, code) =>
@@ -171,6 +215,8 @@ const CASES: Case[] = [
   {
     name: "token-blower",
     failure: "burns tokens",
+    caught: "`--max-tokens`",
+    origin: "design",
     agent: "budget-blower.ts",
     limits: ["--adapter", "claude", "--max-tokens", "300k", "--max-runtime", "30s"],
     expect: killedBy("max-tokens"),
@@ -178,6 +224,8 @@ const CASES: Case[] = [
   {
     name: "send-loop",
     failure: "sends 21 messages",
+    caught: "ledger: 5 allowed, 16 refused",
+    origin: "incident",
     agent: "send-loop.ts",
     limits: ["--max-runtime", "40s"],
     expect: (r) =>
@@ -188,6 +236,8 @@ const CASES: Case[] = [
   {
     name: "kill-file",
     failure: "must be stopped by hand",
+    caught: "`nightshift stop latest` from the harness",
+    origin: "design",
     agent: "kill-file.ts",
     limits: ["--max-runtime", "30s"],
     during: async ({ home }) => {
@@ -199,6 +249,8 @@ const CASES: Case[] = [
   {
     name: "postcondition",
     failure: "claims success, produced nothing",
+    caught: "`--require`, exit code 3",
+    origin: "incident",
     agent: "postcondition.ts",
     limits: ["--require", "out.json"],
     expect: (r, code) =>
@@ -207,6 +259,8 @@ const CASES: Case[] = [
   {
     name: "stdin-waiter",
     failure: "waits for a keyboard",
+    caught: "stdin is closed by default, exits at once",
+    origin: "design",
     agent: "stdin-waiter.ts",
     limits: ["--max-runtime", "10s"],
     expect: (r) =>
@@ -279,8 +333,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * The scoreboard table. With `added`, a column saying which commit brought
+ * each case in; without it, the four columns `--list` prints. `origin` lets
+ * the caller turn "issue #12" into a link.
+ */
+export function casesTable(cases: Case[], opts: { added?: Map<string, string>; origin?: (origin: Origin) => string } = {}): string {
+  const { added, origin = (o) => o } = opts;
+  const head = ["Case", "What the agent does", "Caught by", ...(added ? ["Added in"] : []), "Origin"];
+  const rows = cases.map((c) => [
+    `\`${c.name}\``,
+    c.failure,
+    c.caught,
+    ...(added ? [added.get(c.name) ?? "unknown"] : []),
+    origin(c.origin),
+  ]);
+  return [head, head.map(() => "---"), ...rows].map((cells) => `| ${cells.join(" | ")} |`).join("\n");
+}
+
 async function main(): Promise<void> {
   const only = process.argv[2];
+  if (only === "--list") {
+    console.log(`${casesTable(CASES)}\n\n${CASES.length} cases`);
+    return;
+  }
   const cases = only ? CASES.filter((c) => c.name === only) : CASES;
   console.log(`nightshift crash suite · ${cases.length} failure modes\n`);
   let caught = 0;
@@ -298,4 +374,4 @@ async function main(): Promise<void> {
   process.exit(caught === cases.length ? 0 : 1);
 }
 
-void main();
+if (import.meta.main) void main();
