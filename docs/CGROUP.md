@@ -1,6 +1,6 @@
 # The cgroup net
 
-The README describes four nets that a kill casts over an agent's process tree: the process group, the descendant map, the environment marker and the stray check. Each identifies a process by something the process can change about itself. A process that calls `setsid()`, is orphaned onto `init`, starts with an empty environment and `chdir`s away from the run's directory is invisible to all four. The `cgroup-escape` case in the crash suite does exactly that, on purpose, in five lines.
+The first four nets in the README (the process group, the descendant map, the environment marker and the stray check) each identify a process by something the process can change about itself. A process that calls `setsid()`, is orphaned onto `init`, starts with an empty environment and `chdir`s away from the run's directory is invisible to all four. The `cgroup-escape` case in the crash suite does exactly that, on purpose, in five lines.
 
 On Linux there is a fifth net that does not care about any of it. Cgroup membership is inherited on `fork()` and can only be changed by writing to the cgroup filesystem, which the agent cannot do unless it owns the directory. So `cgroup.procs` lists every descendant of the agent, however it was started and whatever it did afterwards.
 

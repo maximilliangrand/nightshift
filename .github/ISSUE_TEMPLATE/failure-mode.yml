@@ -47,7 +47,7 @@ body:
     attributes:
       label: nightshift version
       description: "`nightshift --version`, and whether it ran under node or bun."
-      placeholder: 0.1.0 under node 20
+      placeholder: 0.2.0 under node 20
   - type: textarea
     id: agent
     attributes:

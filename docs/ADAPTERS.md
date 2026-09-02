@@ -1,6 +1,6 @@
 # Adapters
 
-An adapter teaches nightshift one agent CLI: how to recognise it on the command line, how to switch on its machine-readable output without changing what it does, and how to turn that output into tokens, dollars and a record of what it touched. `--adapter auto` (the default) picks the first adapter whose `matches()` says yes; `--adapter <name>` forces one, which is how a script that merely speaks an adapter's format on stdout gets metered; `--adapter none` runs unmetered. The interface is `src/meters/adapter.ts`; the registry is `src/meters/index.ts`.
+There are three: `claude`, `codex` and `openclaw`. An adapter teaches nightshift one agent CLI: how to recognise it on the command line, how to switch on its machine-readable output without changing what it does, and how to turn that output into tokens, dollars and a record of what it touched. `--adapter auto` (the default) picks the first adapter whose `matches()` says yes; `--adapter <name>` forces one, which is how a script that merely speaks an adapter's format on stdout gets metered; `--adapter none` runs unmetered. The interface is `src/meters/adapter.ts`; the registry is `src/meters/index.ts`.
 
 | | `claude` | `codex` |
 |---|---|---|
@@ -22,7 +22,9 @@ An adapter teaches nightshift one agent CLI: how to recognise it on the command 
 | Interactive | `claude` without `-p`: unmetered, noted | `codex` without `exec` (including top-level `codex review`): unmetered, noted |
 | Prices as of | see `src/meters/claude.ts` | developers.openai.com/api/docs/pricing, 2026-09-02, Standard tier, short context |
 
-Prices for both adapters can be overridden with one `NIGHTSHIFT_PRICES` table keyed by model id, USD per million tokens: `{"gpt-5.6-sol":{"input":4,"output":20,"cacheRead":0.4,"cacheWrite":5}}`.
+The `openclaw` adapter (`openclaw agent …`, or `--adapter openclaw`) has its own page, [ADAPTERS-openclaw.md](ADAPTERS-openclaw.md). It does not fit the rows above: `openclaw agent` is a thin client, so usage is read from the JSON envelope printed at the end of the turn and from the session transcript the gateway writes while the turn runs, not from a stream on stdout.
+
+Prices for every adapter can be overridden with one `NIGHTSHIFT_PRICES` table keyed by model id, USD per million tokens: `{"gpt-5.6-sol":{"input":4,"output":20,"cacheRead":0.4,"cacheWrite":5}}`.
 
 ## Codex: built from sources and fixtures, not from a live run
 

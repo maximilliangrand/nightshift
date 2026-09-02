@@ -77,6 +77,15 @@ BEHAVIOUR
 
 ADAPTERS  ${ADAPTER_NAMES.filter((n) => n !== "auto" && n !== "none").join(", ")}
 
+ENVIRONMENT
+  NIGHTSHIFT_HOME           where runs, reports and ledgers live (default ~/.nightshift)
+  NIGHTSHIFT_PRICES         price overrides as JSON keyed by model id, USD per million tokens:
+                            '{"claude-opus-5":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":10}}'
+  delivery                  NIGHTSHIFT_TELEGRAM_TOKEN, NIGHTSHIFT_TELEGRAM_CHAT, NIGHTSHIFT_DISCORD_WEBHOOK,
+                            NIGHTSHIFT_WEBHOOK (see --report)
+  The agent receives NIGHTSHIFT_RUN_ID (the run id; also the marker a kill looks for)
+  and NIGHTSHIFT_RUN_DIR (the run's directory, where the report will be written).
+
 EXIT CODES
   run:           0 completed · 1 failed · 2 killed by a limit · 3 postcondition failed
   ledger claim:  0 claimed · 3 duplicate · 4 capped

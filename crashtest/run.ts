@@ -433,7 +433,12 @@ export function casesTable(cases: Case[], opts: { added?: Map<string, string>; o
     ...(added ? [added.get(c.name) ?? "unknown"] : []),
     origin(c.origin),
   ]);
-  return [head, head.map(() => "---"), ...rows].map((cells) => `| ${cells.join(" | ")} |`).join("\n");
+  return [head, head.map(() => "---"), ...rows].map((cells) => `| ${cells.map(cell).join(" | ")} |`).join("\n");
+}
+
+/** A cell must stay on its row: a bare "|" starts the next column and a newline ends the row. */
+function cell(text: string): string {
+  return text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
 async function main(): Promise<void> {

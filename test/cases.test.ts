@@ -79,6 +79,10 @@ describe("tables", () => {
     expect(withoutCommitIds(a)).toBe(withoutCommitIds(b));
     expect(withoutCommitIds(a)).not.toBe(withoutCommitIds(a.replace("v0.1.0", "v0.2.0")));
   });
+  test("a bare | or a newline in a cell stays on its row", () => {
+    const row = casesTable([sample({ failure: "prints a | b", caught: "`--max-output`,\nchecked per chunk" })]).split("\n")[2];
+    expect(row).toBe("| `hang` | prints a \\| b | `--max-output`, checked per chunk | incident |");
+  });
   test("tableProblems names the case, not the line", () => {
     const want = renderTable([sample({}), sample({ name: "runaway", failure: "never finishes" })], new Map([["hang", { version: "0.1.0", sha: "abc1234" }], ["runaway", { version: "0.1.0", sha: null }]]), REPO);
     const have = want.split("\n").filter((l) => !l.includes("`runaway`")).join("\n") + "\n| `ghost` | x | y | z | design |";
@@ -105,6 +109,18 @@ describe("validateCases", () => {
     expect(problems.some((p) => p.includes('origin "guess"'))).toBe(true);
     expect(problems.some((p) => p.includes("missing agent nope.ts"))).toBe(true);
     expect(problems.some((p) => p.includes('"y" does not say what catches it'))).toBe(true);
+  });
+  test("rejects a | or a newline in a cell and a backtick in the name, since the table is keyed by it", () => {
+    const problems = validateCases(
+      [sample({ failure: "a | b" }), sample({ name: "two", caught: "line\nbreak" }), sample({ name: "tick`ed" })],
+      agents,
+    );
+    expect(problems).toEqual([
+      'crashtest/run.ts: case "hang" has a "|" or a newline in failure',
+      'crashtest/run.ts: case "two" has a "|" or a newline in caught',
+      'crashtest/run.ts: case "tick`ed" has a "|", a backtick or a newline in its name',
+    ]);
+    expect(validateCases([sample({ caught: "`--budget`, per-message dedupe" })], agents)).toEqual([]);
   });
 });
 
@@ -136,6 +152,17 @@ describe("syncCasesDoc", () => {
     expect(syncCasesDoc(doc.replace(header, ""), table, "v0.1.0: 1").problems).toEqual(["docs/CASES.md table: empty"]);
     expect(text).toBe(`intro\n\n<!-- cases:table -->\n${table}\n<!-- /cases:table -->\n\n<!-- cases:history -->\nv0.1.0: 1 → 2\n<!-- /cases:history -->\nend\n`);
     expect(syncCasesDoc(text, table, "v0.1.0: 1 → 2").problems).toEqual([]);
+  });
+  test("case text with $ patterns and a | round-trips literally, so --check passes after --write", () => {
+    const hostile = sample({ name: "dollar", failure: "prints $& and $' and $1, then a | pipe", caught: "`--max-output` at $2" });
+    const table = renderTable([hostile], new Map([["dollar", { version: "0.2.0", sha: null }]]), REPO);
+    expect(table.split("\n")[2]).toBe("| `dollar` | prints $& and $' and $1, then a \\| pipe | `--max-output` at $2 | v0.2.0, pending | incident |");
+    const doc = "intro\n\n<!-- cases:table -->\nstale\n<!-- /cases:table -->\n\n<!-- cases:history -->\nv0.1.0: 1\n<!-- /cases:history -->\nend $& $'\n";
+    const written = syncCasesDoc(doc, table, "v0.2.0: $1").text;
+    expect(written).toBe(`intro\n\n<!-- cases:table -->\n${table}\n<!-- /cases:table -->\n\n<!-- cases:history -->\nv0.2.0: $1\n<!-- /cases:history -->\nend $& $'\n`);
+    expect(written.split("<!-- cases:table -->").length).toBe(2);
+    expect(syncCasesDoc(written, table, "v0.2.0: $1").problems).toEqual([]);
+    expect(syncReadme("[![x](crash_suite-1%2F1_failure_modes_caught)](y) <!-- cases:badge -->\n<!-- cases:count -->1<!-- /cases:count --> $&", 2).text).toContain("<!-- cases:count -->2<!-- /cases:count --> $&");
   });
 });
 

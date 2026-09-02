@@ -89,6 +89,20 @@ export function renderTable(cases: Case[], added: Map<string, Added>, repoUrl: s
   return casesTable(cases, { added: cells, origin });
 }
 
+/**
+ * The three text cells of a scoreboard row. A "|" or a newline would split
+ * the row; a backtick in the name would break the cell that --check keys rows by.
+ * `caught` and `failure` may use backticks, that is how flags are written.
+ */
+function cellProblems(c: Case): string[] {
+  const problems: string[] = [];
+  if (/[`|\n]/.test(c.name)) problems.push(`${RUN_TS}: case "${c.name}" has a "|", a backtick or a newline in its name`);
+  for (const [field, value] of [["failure", c.failure], ["caught", c.caught]] as const) {
+    if (/[|\n]/.test(value)) problems.push(`${RUN_TS}: case "${c.name}" has a "|" or a newline in ${field}`);
+  }
+  return problems;
+}
+
 /** What is wrong with the cases themselves, before any file is compared. */
 export function validateCases(cases: Case[], agentsDir: string): string[] {
   const problems: string[] = [];
@@ -96,6 +110,7 @@ export function validateCases(cases: Case[], agentsDir: string): string[] {
   for (const c of cases) {
     if (seen.has(c.name)) problems.push(`${RUN_TS}: case "${c.name}" is listed twice`);
     seen.add(c.name);
+    problems.push(...cellProblems(c));
     if (!c.caught.trim()) problems.push(`${RUN_TS}: case "${c.name}" does not say what catches it (caught)`);
     if (!ORIGIN.test(c.origin)) problems.push(`${RUN_TS}: case "${c.name}" has origin "${c.origin}"; use incident, design, review, red team or issue #N`);
     if (c.agent === null) continue;
@@ -110,11 +125,15 @@ export function validateCases(cases: Case[], agentsDir: string): string[] {
   return problems;
 }
 
-/** Rewrite one marked span; the caller decides what goes inside. */
+/**
+ * Rewrite one marked span; the caller decides what goes inside. The replacer
+ * is a function so that `inner` lands verbatim: given as a string, `$&`, `$'`
+ * or `$1` in a case's text would be read as a replacement pattern.
+ */
 function replaceSpan(text: string, marker: string, inner: string): { text: string; found: boolean } {
   const re = new RegExp(`(<!-- ${marker} -->)[\\s\\S]*?(<!-- /${marker} -->)`);
   if (!re.test(text)) return { text, found: false };
-  return { text: text.replace(re, `$1${inner}$2`), found: true };
+  return { text: text.replace(re, (_match, open: string, close: string) => `${open}${inner}${close}`), found: true };
 }
 
 function spanContent(text: string, marker: string): string | null {

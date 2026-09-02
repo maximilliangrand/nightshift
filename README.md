@@ -83,7 +83,7 @@ And the report it leaves behind, the one you read on your phone (abridged):
 - Output: 26KB → `~/.nightshift/runs/20260902-195455-auvk5t-e2e/output.log`
 ```
 
-Every run writes `report.md`, `report.json`, the full `output.log` and, for Claude Code, the raw `events.jsonl`, under `~/.nightshift/runs/<id>/`. That includes the runs that were killed, the ones whose command did not exist, and the ones where you hit Ctrl-C. A run you cannot read about in the morning did not happen.
+Every run writes `report.md`, `report.json`, the full `output.log` and, for metered commands (Claude Code, Codex, OpenClaw), the raw `events.jsonl`, under `~/.nightshift/runs/<id>/`. That includes the runs that were killed, the ones whose command did not exist, and the ones where you hit Ctrl-C. A run you cannot read about in the morning did not happen.
 
 ## Limits
 
@@ -217,7 +217,7 @@ Exit codes: `0` completed · `1` failed · `2` killed by a limit · `3` postcond
 
 ## The crash suite
 
-Claims about supervisors are cheap. `bun run crashtest` runs <!-- cases:count -->24<!-- /cases:count --> deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**.
+Claims about supervisors are cheap. `bun run crashtest` runs <!-- cases:count -->24<!-- /cases:count --> deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**. This is a run on a Mac (paths abridged):
 
 ```
 nightshift crash suite · 24 failure modes
@@ -250,7 +250,7 @@ nightshift crash suite · 24 failure modes
 23/23 failure modes caught, 1 n/a on this machine
 ```
 
-It runs in CI on macOS and Linux; a case that a machine cannot exercise (the cgroup net on macOS) is reported as n/a, never as a pass. Every case is on the scoreboard in [docs/CASES.md](docs/CASES.md): what the agent does, what catches it, which commit added it and where it came from, an incident on one of our machines, a review, the red team, or an issue somebody opened. The badge above is that table's count, and CI refuses to go green when the two drift: `bun scripts/cases.ts --check` is the gate, `--write` fixes it, `bun run cases` prints the table without running anything. If an agent got past nightshift on your machine, open an issue with the "My agent escaped" form. An accepted escape becomes a case in the suite before it is fixed; the rules are in [CONTRIBUTING.md](CONTRIBUTING.md), and how to write one is in [docs/CRASHTEST.md](docs/CRASHTEST.md).
+It runs in CI on macOS and Linux; a case that a machine cannot exercise (the cgroup net on macOS) is reported as n/a, never as a pass. The badge counts cases: on macOS the cgroup case reports n/a, so a local run prints 23/23 with 1 n/a while Linux prints 24/24. Every case is on the scoreboard in [docs/CASES.md](docs/CASES.md): what the agent does, what catches it, which commit added it and where it came from, an incident on one of our machines, a review, the red team, or an issue somebody opened. The badge above is that table's count, and CI refuses to go green when the two drift: `bun scripts/cases.ts --check` is the gate, `--write` fixes it, `bun run cases` prints the table without running anything. If an agent got past nightshift on your machine, open an issue with the "My agent escaped" form. An accepted escape becomes a case in the suite before it is fixed; the rules are in [CONTRIBUTING.md](CONTRIBUTING.md), and how to write one is in [docs/CRASHTEST.md](docs/CRASHTEST.md).
 
 ## What it is not
 
@@ -260,7 +260,7 @@ It runs in CI on macOS and Linux; a case that a machine cannot exercise (the cgr
 
 ## Design notes
 
-- No daemon, no database, no dependencies. State is files under `~/.nightshift` that you can `cat`.
+- No daemon, no database, no dependencies. State is files under `~/.nightshift` (or `NIGHTSHIFT_HOME`) that you can `cat`. The agent is told where its own run lives: `NIGHTSHIFT_RUN_ID` is the id and `NIGHTSHIFT_RUN_DIR` the directory the report will be written to.
 - Every exit path writes a report, including the ones where the agent was killed or the supervisor received SIGINT.
 - Everything that can fail open does (notifications, the hook). Everything that must fail closed does (an unmeasurable budget refuses to start).
 - The samples in this README are from real runs on 2026-09-02, abridged where marked. Re-run them: `bun test && bun run crashtest`.
