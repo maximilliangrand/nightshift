@@ -90,7 +90,11 @@ export async function decide(
     if (!re.test(command)) continue;
     const key = commandKey(command);
     const limit = rule.limit ? parseRate(rule.limit) : undefined;
-    const result = await claimFn(rule.scope, key, limit, { session: input.session_id, command: command.slice(0, 200) });
+    // The key is enough to recognise the command again; the command itself
+    // may carry a token in its URL and is not stored.
+    const meta: Record<string, unknown> = { rule: rule.note ?? rule.match };
+    if (input.session_id) meta.session = input.session_id;
+    const result = await claimFn(rule.scope, key, limit, meta);
     if (result.ok) return { decision: "allow", rule, key };
     const what = rule.note ? `${rule.note} ` : "";
     const reason =
@@ -130,41 +134,73 @@ export async function runHook(stdin: NodeJS.ReadableStream, stdout: NodeJS.Writa
   return 0;
 }
 
+type PreToolUseEntry = { matcher?: string; hooks?: Array<{ type: string; command: string }> };
+
+export function claudeSettingsPath(): string {
+  return path.join(os.homedir(), ".claude", "settings.json");
+}
+
+/**
+ * Read settings.json. Only a missing file means "no settings yet"; anything
+ * else (a syntax error, a permissions problem, a directory) is an error, and
+ * an error means we do not write, because writing would replace the file.
+ */
+function readClaudeSettings(settingsPath: string): { settings: Record<string, unknown>; mode: number; existed: boolean } {
+  let raw: string;
+  let mode = 0o600;
+  try {
+    mode = fs.statSync(settingsPath).mode & 0o777;
+    raw = fs.readFileSync(settingsPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { settings: {}, mode, existed: false };
+    throw new Error(`cannot read ${settingsPath}: ${(err as Error).message}`);
+  }
+  let settings: unknown;
+  try {
+    settings = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`${settingsPath} is not valid JSON (${(err as Error).message}); fix it by hand, nothing was changed`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error(`${settingsPath} does not contain a JSON object; nothing was changed`);
+  }
+  return { settings: settings as Record<string, unknown>, mode, existed: true };
+}
+
+/** Back up, then write via a temp file and rename, keeping the old mode. */
+function writeClaudeSettings(settingsPath: string, settings: Record<string, unknown>, mode: number, existed: boolean): void {
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true, mode: 0o700 });
+  if (existed) fs.copyFileSync(settingsPath, `${settingsPath}.bak`);
+  const tmp = `${settingsPath}.nightshift-tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n", { mode });
+  fs.renameSync(tmp, settingsPath);
+}
+
 /** Wire `nightshift hook` into ~/.claude/settings.json as a Bash PreToolUse hook. */
 export function installIntoClaudeSettings(command = "nightshift hook"): { path: string; changed: boolean } {
-  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
-  let settings: Record<string, unknown> = {};
-  try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-  } catch {
-    // No settings yet.
-  }
+  const settingsPath = claudeSettingsPath();
+  const { settings, mode, existed } = readClaudeSettings(settingsPath);
   const hooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
-  const pre = (hooks.PreToolUse ?? []) as Array<{ matcher?: string; hooks?: Array<{ type: string; command: string }> }>;
+  const pre = (hooks.PreToolUse ?? []) as PreToolUseEntry[];
   const already = pre.some((entry) => entry.hooks?.some((h) => h.command === command));
   if (already) return { path: settingsPath, changed: false };
   pre.push({ matcher: "Bash", hooks: [{ type: "command", command }] });
   hooks.PreToolUse = pre;
   settings.hooks = hooks;
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  writeClaudeSettings(settingsPath, settings, mode, existed);
   return { path: settingsPath, changed: true };
 }
 
 export function uninstallFromClaudeSettings(command = "nightshift hook"): { path: string; changed: boolean } {
-  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
-  let settings: Record<string, unknown>;
-  try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-  } catch {
-    return { path: settingsPath, changed: false };
-  }
+  const settingsPath = claudeSettingsPath();
+  const { settings, mode, existed } = readClaudeSettings(settingsPath);
+  if (!existed) return { path: settingsPath, changed: false };
   const hooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
-  const pre = (hooks.PreToolUse ?? []) as Array<{ matcher?: string; hooks?: Array<{ type: string; command: string }> }>;
+  const pre = (hooks.PreToolUse ?? []) as PreToolUseEntry[];
   const kept = pre.filter((entry) => !entry.hooks?.some((h) => h.command === command));
   if (kept.length === pre.length) return { path: settingsPath, changed: false };
   hooks.PreToolUse = kept;
   settings.hooks = hooks;
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  writeClaudeSettings(settingsPath, settings, mode, existed);
   return { path: settingsPath, changed: true };
 }

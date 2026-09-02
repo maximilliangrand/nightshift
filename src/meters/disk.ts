@@ -90,12 +90,20 @@ export async function freeBytes(p: string): Promise<number | null> {
   }
 }
 
+/**
+ * `du` exits 1 for any warning (an unreadable subdirectory, a temp file that
+ * vanished between readdir and stat) while still printing a correct total.
+ * Only a timeout means the directory is unmeasurable.
+ */
 export async function dirBytes(dir: string): Promise<number | null> {
+  let stdout: string;
   try {
-    const { stdout } = await execFileAsync("du", ["-sk", dir], { timeout: DU_TIMEOUT_MS });
-    const kb = Number(stdout.trim().split(/\s+/)[0]);
-    return Number.isFinite(kb) ? kb * 1024 : null;
-  } catch {
-    return null;
+    ({ stdout } = await execFileAsync("du", ["-sk", dir], { timeout: DU_TIMEOUT_MS }));
+  } catch (err) {
+    const failure = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string; stdout?: string };
+    if (failure.killed || failure.signal || typeof failure.stdout !== "string") return null;
+    stdout = failure.stdout;
   }
+  const kb = Number(stdout.trim().split(/\s+/)[0]);
+  return Number.isFinite(kb) ? kb * 1024 : null;
 }

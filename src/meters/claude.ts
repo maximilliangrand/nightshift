@@ -14,6 +14,7 @@
  *    spend is estimated live from tokens using list prices, then reconciled
  *    against the reported figure when the run ends. The report shows both.
  */
+import { redact } from "../redact.js";
 
 export interface UsageTotals {
   inputTokens: number;
@@ -262,9 +263,9 @@ export class ClaudeStreamMeter {
       if (!this.totals.filesWritten.includes(filePath)) this.totals.filesWritten.push(filePath);
     }
     if (name === "Bash" && typeof input.command === "string" && this.totals.commands.length < MAX_COMMANDS_KEPT) {
-      this.totals.commands.push(input.command);
+      this.totals.commands.push(redact(input.command));
     }
-    const summary = summarizeToolUse(name, input);
+    const summary = redact(summarizeToolUse(name, input));
     this.hooks.onText?.(`  ⚙ ${summary}\n`);
   }
 

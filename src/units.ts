@@ -1,8 +1,10 @@
 /**
  * Human units in, numbers out. Every limit on the command line goes through
  * here, so "2h", "5usd", "500mb", "2M" and "40/day" all mean what a tired
- * person at 23:00 expects them to mean.
+ * person at 23:00 expects them to mean. A value that cannot be read is a
+ * UsageError, so the CLI exits 64 rather than pretending the run failed.
  */
+import { UsageError } from "./errors.js";
 
 const DURATION_UNITS: Record<string, number> = {
   ms: 1,
@@ -29,7 +31,7 @@ export function parseDuration(input: string): number {
     consumed += match[0].length;
   }
   if (consumed !== text.replace(/\s+/g, "").length || total <= 0) {
-    throw new Error(`Cannot read duration "${input}" (try 90s, 15m, 2h, 1h30m)`);
+    throw new UsageError(`Cannot read duration "${input}" (try 90s, 15m, 2h, 1h30m)`);
   }
   return Math.round(total);
 }
@@ -39,7 +41,7 @@ export function parseMoney(input: string): number {
   const text = input.trim().toLowerCase().replace(/^\$/, "").replace(/usd$/, "").trim();
   const value = Number(text);
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`Cannot read amount "${input}" (try 5usd, $5, 0.50)`);
+    throw new UsageError(`Cannot read amount "${input}" (try 5usd, $5, 0.50)`);
   }
   return value;
 }
@@ -55,20 +57,20 @@ const BYTE_UNITS: Record<string, number> = {
 /** "500mb", "2gb", "1024" (bytes when bare). Returns bytes. */
 export function parseBytes(input: string): number {
   const match = input.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/);
-  if (!match) throw new Error(`Cannot read size "${input}" (try 500mb, 2gb)`);
+  if (!match) throw new UsageError(`Cannot read size "${input}" (try 500mb, 2gb)`);
   const unit = BYTE_UNITS[match[2] ?? "b"] ?? 1;
   const value = Number(match[1]) * unit;
-  if (value <= 0) throw new Error(`Size "${input}" must be positive`);
+  if (value <= 0) throw new UsageError(`Size "${input}" must be positive`);
   return Math.round(value);
 }
 
 /** "2M", "500k", "1500000". Returns a count. */
 export function parseCount(input: string): number {
   const match = input.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([km])?$/);
-  if (!match) throw new Error(`Cannot read count "${input}" (try 500k, 2M)`);
+  if (!match) throw new UsageError(`Cannot read count "${input}" (try 500k, 2M)`);
   const scale = match[2] === "m" ? 1_000_000 : match[2] === "k" ? 1_000 : 1;
   const value = Number(match[1]) * scale;
-  if (value <= 0) throw new Error(`Count "${input}" must be positive`);
+  if (value <= 0) throw new UsageError(`Count "${input}" must be positive`);
   return Math.round(value);
 }
 
@@ -92,9 +94,9 @@ const RATE_WINDOWS: Record<string, Rate["window"]> = {
 /** "40/day", "10/hour", "3/min". A sliding window, not a calendar one. */
 export function parseRate(input: string): Rate {
   const match = input.trim().toLowerCase().match(/^(\d+)\s*(?:\/|per)\s*(m|min|minute|h|hr|hour|d|day)$/);
-  if (!match) throw new Error(`Cannot read rate "${input}" (try 40/day, 10/hour)`);
+  if (!match) throw new UsageError(`Cannot read rate "${input}" (try 40/day, 10/hour)`);
   const window = RATE_WINDOWS[match[2] ?? ""];
-  if (!window) throw new Error(`Cannot read rate window in "${input}"`);
+  if (!window) throw new UsageError(`Cannot read rate window in "${input}"`);
   const windowMs = window === "minute" ? 60_000 : window === "hour" ? 3_600_000 : 86_400_000;
   return { limit: Number(match[1]), windowMs, window };
 }

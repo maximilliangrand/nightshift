@@ -42,6 +42,7 @@ export interface RunReport {
   outcome: Outcome;
   exitCode: number | null;
   signal: string | null;
+  failedToStart?: string;
   kill?: { guard: string; reason: string; escalatedToSigkill: boolean };
   orphans?: { found: number[]; survivors: number[] };
   survivors: number[];
@@ -208,7 +209,7 @@ function spendLines(u: UsageTotals): string[] {
     lines.push(`- Cost unknown: no price for${model || " this model"}`);
   }
   lines.push(
-    `- Tokens: ${fmtCount(u.totalTokens)} total - ${fmtCount(u.inputTokens)} in, ${fmtCount(u.outputTokens)} out, ${fmtCount(u.cacheReadTokens)} cache read, ${fmtCount(u.cacheWriteTokens)} cache write`,
+    `- Tokens: ${fmtCount(u.totalTokens)} (${fmtCount(u.inputTokens)} in, ${fmtCount(u.outputTokens)} out, ${fmtCount(u.cacheReadTokens)} cache read, ${fmtCount(u.cacheWriteTokens)} cache write)`,
   );
   lines.push(`- ${u.messages} model messages, ${u.turns || u.messages} turns`);
   if (u.rateLimits?.fiveHour !== undefined || u.rateLimits?.sevenDay !== undefined) {
@@ -223,12 +224,16 @@ export function outcomeSentence(r: RunReport): string {
   switch (r.outcome) {
     case "completed":
       return `Completed in ${fmtDuration(r.durationMs)}, exit 0.`;
-    case "failed":
-      return `Exited ${r.exitCode ?? r.signal} after ${fmtDuration(r.durationMs)}.`;
+    case "failed": {
+      const missing = r.postconditions.filter((p) => !p.ok && p.check !== "exited 0").map((p) => p.check);
+      const tail = missing.length ? `; also missing: ${missing.join(", ")}` : "";
+      if (r.failedToStart) return `Could not start: ${r.failedToStart}.`;
+      return `Exited ${r.exitCode ?? r.signal} after ${fmtDuration(r.durationMs)}${tail}.`;
+    }
     case "killed":
       return `Killed by ${r.kill?.guard}: ${r.kill?.reason}${r.kill?.escalatedToSigkill ? " (needed SIGKILL)" : ""}.`;
     case "postcondition-failed":
-      return `Exited ${r.exitCode} but a postcondition failed: ${r.postconditions.filter((p) => !p.ok).map((p) => p.check).join(", ")}.`;
+      return `Exited 0 but a postcondition failed: ${r.postconditions.filter((p) => !p.ok).map((p) => p.check).join(", ")}.`;
   }
 }
 

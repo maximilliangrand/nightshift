@@ -1,5 +1,5 @@
 /**
- * The crash suite. Twelve agents that misbehave the way real ones did, each
+ * The crash suite. Sixteen cases of agents that misbehave the way real ones did, each
  * run under nightshift with the limit that should catch it. A case passes
  * only if the report says what happened *and* nothing is left running.
  *
@@ -23,6 +23,7 @@ interface Report {
   orphans?: { found: number[]; survivors: number[] };
   survivors: number[];
   usage: { totalTokens: number; estimatedUsd: number; messages: number };
+  failedToStart?: string;
   ledger: { claims: number; refused: number };
   postconditions: Array<{ check: string; ok: boolean }>;
   disk: { watched: Record<string, number> };
@@ -31,7 +32,8 @@ interface Report {
 interface Case {
   name: string;
   failure: string;
-  agent: string;
+  /** null: run a command that does not exist */
+  agent: string | null;
   limits: string[];
   during?: (ctx: { home: string; cwd: string }) => Promise<void>;
   expect: (r: Report, exitCode: number | null) => string | null;
@@ -64,6 +66,34 @@ const CASES: Case[] = [
     agent: "ignore-sigterm.ts",
     limits: ["--max-runtime", "2s", "--grace", "1s"],
     expect: (r, code) => killedBy("max-runtime")(r, code) ?? (r.kill?.escalatedToSigkill ? null : "did not escalate to SIGKILL"),
+  },
+  {
+    name: "fast-orphan",
+    failure: "detaches a child, exits in 60ms",
+    agent: "fast-orphan.ts",
+    limits: ["--max-runtime", "20s"],
+    expect: (r) =>
+      r.outcome !== "completed" ? `outcome ${r.outcome}, wanted completed` :
+      !r.orphans?.found.length ? "orphan was not noticed" :
+      r.survivors.length ? `survivors ${r.survivors.join(",")}` : null,
+  },
+  {
+    name: "wrapper-shell",
+    failure: "sh wrapper dies, worker ignores TERM",
+    agent: "wrapper-shell.sh",
+    limits: ["--max-runtime", "2s", "--grace", "1s"],
+    expect: (r, code) => killedBy("max-runtime")(r, code) ?? (r.kill?.escalatedToSigkill ? null : "did not escalate to SIGKILL"),
+  },
+  {
+    name: "spawn-fail",
+    failure: "command does not exist",
+    agent: null,
+    limits: ["--max-runtime", "5s"],
+    expect: (r, code) =>
+      r.outcome !== "failed" ? `outcome ${r.outcome}, wanted failed` :
+      r.exitCode !== 127 ? `exit code in report ${r.exitCode}, wanted 127` :
+      !r.failedToStart ? "report does not say the command failed to start" :
+      code !== 1 ? `nightshift exit ${code}, wanted 1` : null,
   },
   {
     name: "orphan",
@@ -154,8 +184,9 @@ const CASES: Case[] = [
 async function runCase(c: Case): Promise<{ ok: boolean; detail: string; ms: number }> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-crash-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-crash-cwd-"));
-  const agent = path.join(AGENTS, c.agent);
-  const args = [CLI, "run", "--quiet", "--tick", "500ms", "--name", c.name, ...c.limits, "--", "bun", agent];
+  const agent = c.agent ? path.join(AGENTS, c.agent) : "/nonexistent/nightshift-crashtest-missing-binary";
+  const runner = c.agent === null ? [agent] : c.agent.endsWith(".sh") ? ["sh", agent] : ["bun", agent];
+  const args = [CLI, "run", "--quiet", "--tick", "500ms", "--name", c.name, ...c.limits, "--", ...runner];
   const env = { ...process.env, NIGHTSHIFT_HOME: home, NIGHTSHIFT_BIN: `bun ${CLI}` };
   const started = Date.now();
 

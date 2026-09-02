@@ -1,5 +1,7 @@
-export { runSupervised, EXIT_CODES, UsageError, type RunOptions } from "./run.js";
-export { Supervisor, type KillResult, type ExitInfo } from "./supervisor.js";
+export { runSupervised, EXIT_CODES, type RunOptions } from "./run.js";
+export { UsageError } from "./errors.js";
+export { redact } from "./redact.js";
+export { Supervisor, processTable, pidsWithEnv, type KillResult, type ExitInfo, type ProcessRow } from "./supervisor.js";
 export { claim, readLedger, summarize, type ClaimResult, type LedgerEntry } from "./ledger.js";
 export { ClaudeStreamMeter, instrumentClaudeArgv, priceFor, costOf, LIST_PRICES, type UsageTotals } from "./meters/claude.js";
 export { DiskMeter } from "./meters/disk.js";

@@ -55,7 +55,8 @@ export interface RunMeta {
   pid: number;
   pgid: number;
   startedAt: string;
-  status: "running" | "completed" | "killed" | "failed" | "postcondition-failed";
+  /** lost: the supervisor died without reporting and its processes are gone. */
+  status: "running" | "completed" | "killed" | "failed" | "postcondition-failed" | "lost";
   supervisorPid: number;
   killFile?: string;
 }

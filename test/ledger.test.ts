@@ -63,6 +63,26 @@ describe("ledger", () => {
     expect(results.filter((r) => r.ok)).toHaveLength(10);
   });
 
+  test("a damaged line does not erase the scope's history", async () => {
+    const limit = parseRate("2/day");
+    await claim({ scope: "wa", key: "sent-1", limit });
+    fs.appendFileSync(path.join(home, "ledger", "wa.jsonl"), '{"ts":"2026-09-02T0'); // truncated append
+    const dup = await claim({ scope: "wa", key: "sent-1", limit });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.reason).toBe("duplicate");
+    expect(dup.corrupt).toBe(1);
+    expect(summarize("wa").corrupt).toBe(1);
+    expect(summarize("wa").claims).toBe(1);
+  });
+
+  test("a stale lock left by a dead holder is cleared", async () => {
+    await claim({ scope: "lk", key: "a" });
+    fs.writeFileSync(path.join(home, "ledger", "lk.jsonl.lock"), "999999"); // pid that does not exist
+    const started = Date.now();
+    expect((await claim({ scope: "lk", key: "b" })).ok).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   test("scope names are sanitised", async () => {
     await claim({ scope: "Telegram/Prod Bot", key: "x" });
     expect(fs.existsSync(path.join(home, "ledger", "telegram-prod-bot.jsonl"))).toBe(true);

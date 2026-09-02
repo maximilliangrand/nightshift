@@ -58,7 +58,11 @@ export class IdleGuard implements Guard {
 
 export class KillFileGuard implements Guard {
   readonly name = "kill-file";
-  constructor(private readonly path: string) {}
+  /** builtin: the per-run and global stop files that every run has. */
+  constructor(
+    private readonly path: string,
+    readonly builtin = false,
+  ) {}
   describe(): string {
     return `stop when ${this.path} exists`;
   }
