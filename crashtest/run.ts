@@ -3,6 +3,11 @@
  * under nightshift with the limit that should catch it. A case passes only
  * if the report says what happened *and* nothing is left running.
  *
+ * A case may declare itself not applicable on the machine it runs on (the
+ * cgroup net exists only on Linux, and not on every Linux). It is then
+ * reported as n/a with the reason, its leftovers are cleaned up rather than
+ * counted, and it does not fail the suite.
+ *
  *   bun run crashtest            run every case
  *   bun run crashtest <name>     run one
  *   bun run crashtest --list     print the cases table without running
@@ -34,6 +39,7 @@ interface Report {
   ledger: { claims: number; refused: number };
   postconditions: Array<{ check: string; ok: boolean }>;
   disk: { watched: Record<string, number> };
+  notes: string[];
 }
 
 /** Where a case came from. New cases from the issue tracker use `issue #N`. */
@@ -51,7 +57,11 @@ export interface Case {
   limits: string[];
   env?: Record<string, string>;
   during?: (ctx: { home: string; cwd: string }) => Promise<void>;
+  /** Why this machine cannot exercise the case, read from the report; null means judge it. */
+  notApplicable?: (r: Report) => string | null;
   expect: (r: Report, exitCode: number | null) => string | null;
+  /** The line to print for a pass, when the generic one would not say enough. */
+  detail?: (r: Report) => string;
 }
 
 const killedBy = (guard: string) => (r: Report, code: number | null) =>
@@ -266,9 +276,30 @@ export const CASES: Case[] = [
     expect: (r) =>
       r.outcome !== "completed" ? `outcome ${r.outcome}` : r.durationMs > 5000 ? `took ${r.durationMs}ms; stdin was not closed` : null,
   },
+  {
+    name: "cgroup-escape",
+    failure: "setsid, env {}, cwd /, silent exit",
+    caught: "the cgroup net (Linux only)",
+    origin: "red team",
+    agent: "cgroup-escape.ts",
+    limits: ["--max-runtime", "20s"],
+    notApplicable: (r) =>
+      process.platform !== "linux" ? "not linux, no cgroup net; the escape works here, which is the documented gap" :
+      cgroupNote(r).startsWith("cgroup net: unavailable") ? `${cgroupNote(r)}; the escape works here` : null,
+    expect: (r) =>
+      r.outcome !== "completed" ? `outcome ${r.outcome}, wanted completed` :
+      !cgroupNote(r).startsWith("cgroup net: active") ? `report note "${cgroupNote(r)}" is neither active nor unavailable` :
+      !r.orphans?.found.length ? "escapee was not noticed" :
+      r.survivors.length ? `survivors ${r.survivors.join(",")}` : null,
+    detail: (r) => `${cgroupNote(r)}; caught ${r.orphans?.found.length} escapee`,
+  },
 ];
 
-async function runCase(c: Case): Promise<{ ok: boolean; detail: string; ms: number }> {
+function cgroupNote(r: Report): string {
+  return r.notes.find((n) => n.startsWith("cgroup net:")) ?? "";
+}
+
+async function runCase(c: Case): Promise<{ ok: boolean; na?: boolean; detail: string; ms: number }> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-crash-home-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-crash-cwd-"));
   const agent = c.agent ? path.join(AGENTS, c.agent) : "/nonexistent/nightshift-crashtest-missing-binary";
@@ -298,6 +329,15 @@ async function runCase(c: Case): Promise<{ ok: boolean; detail: string; ms: numb
     return { ok: false, detail: `no report written (exit ${result}) ${stderr.slice(-300)}`, ms };
   }
   const report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as Report;
+  const na = c.notApplicable?.(report) ?? null;
+  if (na !== null) {
+    // Whatever the case left behind is expected here; clean it up, do not count it.
+    await sleep(300);
+    for (const leak of leakedProcesses(agent, cwd)) signalQuietly(leak);
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+    return { ok: true, na: true, detail: `n/a: ${na}`, ms };
+  }
   const problem = c.expect(report, result);
   if (problem) return { ok: false, detail: problem, ms };
 
@@ -310,15 +350,26 @@ async function runCase(c: Case): Promise<{ ok: boolean; detail: string; ms: numb
   }
   fs.rmSync(cwd, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });
-  return { ok: true, detail: describe(report), ms };
+  return { ok: true, detail: c.detail ? c.detail(report) : describe(report), ms };
 }
 
 function leakedProcesses(agent: string, cwd: string): string[] {
   const out = execFileSync("ps", ["-axo", "pid=,ppid=,stat=,command="], { encoding: "utf8" });
   return out
     .split("\n")
-    .filter((l) => (l.includes(agent) || l.includes(cwd) || / sleep 4[234]4[23]\b/.test(l)) && !/^\s*\d+\s+\d+\s+Z/.test(l))
+    .filter((l) => (l.includes(agent) || l.includes(cwd) || /\bsleep 4[234]4[23]\b/.test(l)) && !/^\s*\d+\s+\d+\s+Z/.test(l))
     .map((l) => l.trim().slice(0, 100));
+}
+
+/** SIGKILL the pid at the head of a leakedProcesses() row. */
+function signalQuietly(row: string): void {
+  const pid = Number(row.split(/\s+/)[0]);
+  if (!pid) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
 }
 
 function describe(r: Report): string {
@@ -360,18 +411,21 @@ async function main(): Promise<void> {
   const cases = only ? CASES.filter((c) => c.name === only) : CASES;
   console.log(`nightshift crash suite · ${cases.length} failure modes\n`);
   let caught = 0;
+  let skipped = 0;
   const rows: string[] = [];
   for (const c of cases) {
     process.stdout.write(`  ${c.name.padEnd(16)} ${c.failure.padEnd(36)} `);
     const r = await runCase(c);
-    if (r.ok) caught += 1;
-    const line = `${r.ok ? "✅" : "❌"} ${r.detail} (${(r.ms / 1000).toFixed(1)}s)`;
-    console.log(line);
-    rows.push(`| ${c.name} | ${c.failure} | ${r.ok ? "✅" : "❌"} ${r.detail} |`);
+    if (r.na) skipped += 1;
+    else if (r.ok) caught += 1;
+    const mark = r.na ? "➖" : r.ok ? "✅" : "❌";
+    console.log(`${mark} ${r.detail} (${(r.ms / 1000).toFixed(1)}s)`);
+    rows.push(`| ${c.name} | ${c.failure} | ${mark} ${r.detail} |`);
   }
-  console.log(`\n${caught}/${cases.length} failure modes caught\n`);
+  const judged = cases.length - skipped;
+  console.log(`\n${caught}/${judged} failure modes caught${skipped ? `, ${skipped} n/a on this machine` : ""}\n`);
   if (process.env.CRASHTEST_MARKDOWN) console.log(["| case | failure | result |", "|---|---|---|", ...rows].join("\n"));
-  process.exit(caught === cases.length ? 0 : 1);
+  process.exit(caught === judged ? 0 : 1);
 }
 
 if (import.meta.main) void main();

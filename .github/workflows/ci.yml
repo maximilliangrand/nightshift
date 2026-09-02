@@ -49,3 +49,27 @@ jobs:
             grep -E 'failure modes caught' crashtest.log || true
           } >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
+
+  # The cgroup net (docs/CGROUP.md) has two strategies. The suite above, as
+  # the runner user, exercises the systemd user scope. Root may create a
+  # sub-cgroup under the runner's own service cgroup, so running the case
+  # under sudo exercises the other strategy on the same hosted runner.
+  cgroup-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: where the runner lives
+        run: |
+          id
+          uname -r
+          cat /proc/self/cgroup
+          ls -ld /sys/fs/cgroup
+          systemd-run --user --scope --quiet --collect -- true || true
+      - name: cgroup-escape as the runner user
+        run: bun run crashtest cgroup-escape
+      - name: cgroup-escape as root
+        run: sudo -E env "PATH=$PATH" bun run crashtest cgroup-escape

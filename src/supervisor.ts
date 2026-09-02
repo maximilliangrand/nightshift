@@ -20,6 +20,13 @@
  * still has the run's working directory as its cwd is treated as ours. A
  * process must also chdir away to escape that one.
  *
+ * On Linux there is a fifth net, a cgroup (see cgroup.ts). Membership is
+ * inherited on fork and cannot be given up from inside, so cgroup.procs
+ * lists a descendant that changed its session, parent, environment and
+ * working directory all at once. When no cgroup can be had (cron,
+ * containers, CI runners) the run says so in its notes and the other four
+ * nets carry it, exactly as before.
+ *
  * Every pid we remember is remembered with its start time, so a pid that
  * was recycled by an unrelated process after ours died is dropped, never
  * signalled.
@@ -33,6 +40,7 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
+import { CgroupNet, defaultCgroupPaths, planCgroup, resolveExecutable, type CgroupPaths } from "./cgroup.js";
 
 const execFileAsync = promisify(execFile);
 const REFRESH_MIN_GAP_MS = 100;
@@ -45,6 +53,8 @@ export interface SupervisorOptions {
   graceMs: number;
   /** Env var name and value that marks every process of this run. */
   marker?: { name: string; value: string };
+  /** Ask for the cgroup net (Linux). `paths` is for tests only. */
+  cgroup?: { runId: string; paths?: CgroupPaths };
   onStdout: (chunk: Buffer) => void;
   onStderr: (chunk: Buffer) => void;
 }
@@ -84,6 +94,9 @@ export class Supervisor {
   private baseline = new Set<number>();
   private startedAt = 0;
   private readonly realCwd: string;
+  private cgroup: CgroupNet | null = null;
+  /** "cgroup net: active (<dir>)" or "cgroup net: unavailable (<reason>)", for the report. */
+  cgroupNote = "cgroup net: unavailable (not requested)";
 
   constructor(private readonly opts: SupervisorOptions) {
     let real = opts.cwd;
@@ -113,8 +126,9 @@ export class Supervisor {
     if (!file) throw new Error("No command to run");
     const before = await processTable();
     for (const row of before ?? []) this.baseline.add(row.pid);
+    const [exe = file, ...exeArgs] = this.contained(file);
     this.startedAt = Date.now();
-    const child = spawn(file, args, {
+    const child = spawn(exe, exeArgs, {
       cwd: this.opts.cwd,
       env: this.opts.env,
       detached: true,
@@ -132,6 +146,37 @@ export class Supervisor {
     });
     if (child.pid) void this.refreshDescendants(true);
     return child.pid ?? null;
+  }
+
+  /**
+   * The command to spawn: wrapped so it starts inside a cgroup when one can
+   * be had, the original otherwise. A command that does not exist is never
+   * wrapped, so it still fails to start the way the report expects.
+   */
+  private contained(file: string): string[] {
+    const wanted = this.opts.cgroup;
+    if (!wanted) return this.opts.command;
+    const paths = wanted.paths ?? defaultCgroupPaths();
+    if (paths.platform === "linux" && !resolveExecutable(file, this.opts.env.PATH)) {
+      this.cgroupNote = "cgroup net: unavailable (command not found)";
+      return this.opts.command;
+    }
+    const setup = planCgroup(wanted.runId, this.opts.command, paths);
+    if (!setup.ok) {
+      this.cgroupNote = `cgroup net: unavailable (${setup.reason})`;
+      return this.opts.command;
+    }
+    this.cgroup = new CgroupNet(setup.plan.dir);
+    this.cgroupNote = `cgroup net: active (${setup.plan.dir})`;
+    return setup.plan.command;
+  }
+
+  /** Remove the run's cgroup, once nothing should be left in it. Returns a note if it could not. */
+  async release(): Promise<string | null> {
+    const net = this.cgroup;
+    if (!net) return null;
+    this.cgroup = null;
+    return net.release();
   }
 
   wait(): Promise<ExitInfo> {
@@ -196,6 +241,12 @@ export class Supervisor {
 
     // Strays: new since spawn, re-parented to init, still in our directory.
     for (const row of await this.strays(table)) this.descendants.set(row.pid, row.started);
+
+    // The cgroup, which nothing inside it can leave.
+    for (const pid of this.cgroup?.pids() ?? []) {
+      const row = byPid.get(pid);
+      if (row) this.descendants.set(pid, row.started);
+    }
   }
 
   /**
@@ -251,6 +302,7 @@ export class Supervisor {
     await this.refreshDescendants(true);
     signalGroup(pgid, "SIGTERM");
     for (const pid of this.descendants.keys()) signalPid(pid, "SIGTERM");
+    this.cgroup?.signalAll("SIGTERM");
 
     // Grace is measured from the SIGTERM. The direct child exiting early does
     // not shorten it for the grandchildren still winding down.
@@ -279,6 +331,7 @@ export class Supervisor {
     await this.refreshDescendants(true);
     signalGroup(pgid, "SIGKILL");
     for (const pid of new Set([...this.descendants.keys(), ...alive])) signalPid(pid, "SIGKILL");
+    this.cgroup?.killAll();
     await sleep(300);
   }
 
@@ -307,7 +360,7 @@ export class Supervisor {
     return { found, survivors: alive };
   }
 
-  /** Every pid in the group, on the descendant list or carrying the marker, that is still alive. */
+  /** Every pid in the group, on the descendant list, carrying the marker or inside the cgroup, that is still alive. */
   async survivors(): Promise<number[]> {
     if (!this.child?.pid) return [];
     const table = await processTable();
@@ -329,6 +382,11 @@ export class Supervisor {
     for (const row of await this.strays(table)) {
       this.descendants.set(row.pid, row.started);
       alive.add(row.pid);
+    }
+    // cgroup.procs is read after ps: a pid there but not in the table was born since, and is alive.
+    for (const pid of this.cgroup?.pids() ?? []) {
+      const row = byPid.get(pid);
+      if (!row || !row.stat.startsWith("Z")) alive.add(pid);
     }
     alive.delete(process.pid);
     return [...alive].sort((a, b) => a - b);

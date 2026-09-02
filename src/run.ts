@@ -185,11 +185,13 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
     stdin: opts.stdin,
     graceMs: opts.graceMs,
     marker: { name: "NIGHTSHIFT_RUN_ID", value: id },
+    cgroup: { runId: id },
     onStdout,
     onStderr,
   });
   const startedAt = Date.now();
   const pid = await supervisor.start();
+  notes.push(supervisor.cgroupNote);
   const perRunStop = path.join(dir, "stop");
   const globalStop = path.join(nightshiftHome(), "stop");
 
@@ -300,6 +302,8 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
     if (sweep.found.length) orphans = sweep;
     survivors = sweep.survivors;
   }
+  const leftover = await supervisor.release();
+  if (leftover) notes.push(leftover);
 
   const postconditions = checkPostconditions(opts, exit.code);
   const pathsMissing = postconditions.some((p) => !p.ok && p.check.startsWith("path"));
