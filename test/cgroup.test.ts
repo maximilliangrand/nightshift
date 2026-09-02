@@ -3,17 +3,19 @@
  * /proc. Every path is injectable, so these tests build a fake root in a
  * temp dir and run the real decision logic on any platform.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  CGROUP2_SUPER_MAGIC,
   CgroupNet,
   ownSubtreePlan,
   parseCgroupV2Path,
   planCgroup,
   resolveExecutable,
+  statfsType,
   systemdScopePlan,
   wrapInCgroup,
   type CgroupPaths,
@@ -30,13 +32,36 @@ beforeEach(() => {
     sysfsRoot: path.join(root, "sys", "fs", "cgroup"),
     procSelfCgroup: path.join(root, "proc", "self", "cgroup"),
     systemdRun: path.join(root, "systemd-run"),
+    // The temp dir is not a cgroup mount; "unknown" leaves the decision to the cgroup.procs check.
+    fsType: () => null,
   };
   fs.mkdirSync(path.dirname(paths.procSelfCgroup), { recursive: true });
 });
 afterEach(() => {
+  kernel?.mockRestore();
+  kernel = null;
   fs.chmodSync(root, 0o755);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+/** The value statfs reports for tmpfs (TMPFS_MAGIC), where a cgroup v2 mount would be on a machine that has none. */
+const TMPFS_MAGIC = 0x01021994;
+
+let kernel: ReturnType<typeof spyOn<typeof fs, "mkdirSync">> | null = null;
+
+/**
+ * Model the kernel: on a cgroup2 mount, mkdir populates the new directory
+ * with cgroup.procs at once. A plain mkdir on the temp dir gives an empty
+ * directory, which is exactly what a non-cgroup filesystem does.
+ */
+function cgroupKernel(): void {
+  const realMkdir = fs.mkdirSync;
+  kernel = spyOn(fs, "mkdirSync").mockImplementation(((dir: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+    const made = realMkdir(dir, options);
+    if (!options) fs.writeFileSync(path.join(String(dir), "cgroup.procs"), "");
+    return made;
+  }) as typeof fs.mkdirSync);
+}
 
 /** Point /proc/self/cgroup at `relative` and create the matching sysfs directory. */
 function liveIn(relative: string, opts: { create?: boolean } = {}): string {
@@ -87,6 +112,7 @@ describe("parseCgroupV2Path", () => {
 
 describe("own sub-cgroup", () => {
   test("is created under our cgroup and the command is wrapped", () => {
+    cgroupKernel();
     const parent = liveIn("/user.slice/user-1000.slice/user@1000.service/app.slice");
     const setup = ownSubtreePlan("run-1", command, paths);
     expect(setup.ok).toBe(true);
@@ -96,6 +122,31 @@ describe("own sub-cgroup", () => {
     expect(fs.statSync(dir).isDirectory()).toBe(true);
     // The probe moved a throwaway sh in by writing its pid.
     expect(fs.readFileSync(path.join(dir, "cgroup.procs"), "utf8")).toMatch(/^\d+\n$/);
+  });
+
+  test("is refused, and the directory removed, when mkdir gave an empty directory (no cgroup2 mount)", () => {
+    const parent = liveIn("/user.slice/user-1000.slice/user@1000.service/app.slice");
+    const dir = path.join(parent, "nightshift-run-1");
+    expect(ownSubtreePlan("run-1", command, paths)).toEqual({ ok: false, reason: `${dir} is not on a cgroup2 filesystem` });
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+
+  test("is refused when statfs says the mount is not cgroup2, even with a cgroup.procs in it", () => {
+    cgroupKernel();
+    const parent = liveIn("/user.slice/user-1000.slice/user@1000.service/app.slice");
+    const dir = path.join(parent, "nightshift-run-1");
+    const setup = ownSubtreePlan("run-1", command, { ...paths, fsType: () => TMPFS_MAGIC });
+    expect(setup).toEqual({ ok: false, reason: `${dir} is not on a cgroup2 filesystem` });
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+
+  test("is accepted when statfs says cgroup2 and the kernel populated the directory", () => {
+    cgroupKernel();
+    liveIn("/user.slice/user-1000.slice/user@1000.service/app.slice");
+    const seen: string[] = [];
+    const setup = ownSubtreePlan("run-1", command, { ...paths, fsType: (dir) => (seen.push(dir), CGROUP2_SUPER_MAGIC) });
+    expect(setup.ok).toBe(true);
+    expect(seen).toEqual([path.join(paths.sysfsRoot, "/user.slice/user-1000.slice/user@1000.service/app.slice/nightshift-run-1")]);
   });
 
   test("says why when there is no v2 entry", () => {
@@ -185,10 +236,20 @@ describe("strategy selection", () => {
   });
 
   test("own sub-cgroup first", () => {
+    cgroupKernel();
     liveIn("/user.slice/user-1000.slice/user@1000.service/app.slice");
     fakeSystemdRun(0);
     const setup = planCgroup("run-3", command, paths);
     expect(setup.ok && setup.plan.strategy).toBe("own-subtree");
+  });
+
+  test("systemd scope when our cgroup directory is writable but not a cgroup2 mount", () => {
+    const parent = liveIn("/user.slice/user-1000.slice/user@1000.service/app.slice");
+    fakeSystemdRun(0);
+    const setup = planCgroup("run-3", command, paths);
+    expect(setup.ok && setup.plan.strategy).toBe("systemd-scope");
+    // The refused directory is gone, so nothing is left behind on the non-cgroup mount.
+    expect(fs.readdirSync(parent)).toEqual([]);
   });
 
   test("systemd scope when our cgroup is not ours to write", () => {
@@ -244,15 +305,46 @@ describe("CgroupNet", () => {
   });
 });
 
+describe("statfsType", () => {
+  test("names the filesystem of a directory and is null for a path that is not there", () => {
+    const type = statfsType(root);
+    expect(typeof type).toBe("number");
+    expect(type).not.toBe(CGROUP2_SUPER_MAGIC);
+    expect(statfsType(path.join(root, "missing"))).toBeNull();
+  });
+  test("reports CGROUP2_SUPER_MAGIC for a real cgroup2 mount", () => {
+    if (process.platform !== "linux" || !fs.existsSync("/sys/fs/cgroup/cgroup.procs")) return;
+    expect(statfsType("/sys/fs/cgroup")).toBe(CGROUP2_SUPER_MAGIC);
+  });
+});
+
 describe("resolveExecutable", () => {
+  const cwd = process.cwd();
   test("finds a command on PATH and rejects one that is not there", () => {
-    expect(resolveExecutable("sh", process.env.PATH)).toMatch(/\/sh$/);
-    expect(resolveExecutable("nightshift-definitely-missing-xyz", process.env.PATH)).toBeNull();
-    expect(resolveExecutable("sh", undefined)).toBeNull();
+    expect(resolveExecutable("sh", process.env.PATH, cwd)).toMatch(/\/sh$/);
+    expect(resolveExecutable("nightshift-definitely-missing-xyz", process.env.PATH, cwd)).toBeNull();
+    expect(resolveExecutable("sh", undefined, cwd)).toBeNull();
   });
   test("a path is checked as given", () => {
-    expect(resolveExecutable("/bin/sh", undefined)).toBe("/bin/sh");
-    expect(resolveExecutable(root, undefined)).toBeNull();
-    expect(resolveExecutable("/nonexistent/nightshift", undefined)).toBeNull();
+    expect(resolveExecutable("/bin/sh", undefined, cwd)).toBe("/bin/sh");
+    expect(resolveExecutable(root, undefined, cwd)).toBeNull();
+    expect(resolveExecutable("/nonexistent/nightshift", undefined, cwd)).toBeNull();
+  });
+  test("a relative command is resolved against the run's cwd, as spawn does", () => {
+    const runDir = path.join(root, "run");
+    fs.mkdirSync(path.join(runDir, "bin"), { recursive: true });
+    const agent = path.join(runDir, "agent.sh");
+    fs.writeFileSync(agent, "#!/bin/sh\necho ran from $(pwd)\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(runDir, "bin", "tool.sh"), "#!/bin/sh\n", { mode: 0o755 });
+    // The supervisor's own cwd does not have it; the run's does.
+    expect(resolveExecutable("./agent.sh", undefined, cwd)).toBeNull();
+    expect(resolveExecutable("./agent.sh", undefined, runDir)).toBe(agent);
+    // A relative PATH entry is relative to the same directory.
+    expect(resolveExecutable("tool.sh", "bin", runDir)).toBe(path.join(runDir, "bin", "tool.sh"));
+    expect(resolveExecutable("tool.sh", "bin", cwd)).toBeNull();
+    // What spawn itself does with that command and cwd.
+    const result = spawnSync("./agent.sh", [], { cwd: runDir, encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(`ran from ${fs.realpathSync(runDir)}`);
   });
 });

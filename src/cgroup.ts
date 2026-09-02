@@ -39,6 +39,25 @@ export interface CgroupPaths {
   procSelfCgroup: string;
   /** The systemd-run binary; a fake in tests. */
   systemdRun: string;
+  /**
+   * Filesystem type magic of a directory, null when the kernel or runtime
+   * cannot say. fs.statfsSync by default; a stub in tests, whose fake sysfs
+   * is on whatever the temp dir is.
+   */
+  fsType?: (dir: string) => number | null;
+}
+
+/** statfs(2) f_type of a cgroup v2 mount (CGROUP2_SUPER_MAGIC in the kernel headers). */
+export const CGROUP2_SUPER_MAGIC = 0x63677270;
+
+/** Ask statfs(2) what `dir` sits on; null on a runtime without statfsSync or on any error. */
+export function statfsType(dir: string): number | null {
+  if (typeof fs.statfsSync !== "function") return null;
+  try {
+    return Number(fs.statfsSync(dir).type);
+  } catch {
+    return null;
+  }
 }
 
 export function defaultCgroupPaths(): CgroupPaths {
@@ -100,12 +119,33 @@ export function ownSubtreePlan(runId: string, command: string[], paths: CgroupPa
   } catch (err) {
     return { ok: false, reason: `mkdir ${dir}: ${errorCode(err)}` };
   }
+  if (!isCgroup2Dir(dir, paths.fsType ?? statfsType)) {
+    removeQuietly(dir);
+    return { ok: false, reason: `${dir} is not on a cgroup2 filesystem` };
+  }
   const probe = probeMove(dir);
   if (probe !== null) {
     removeQuietly(dir);
     return { ok: false, reason: `cannot move a process into ${dir}: ${probe}` };
   }
   return { ok: true, plan: { strategy: "own-subtree", command: wrapInCgroup(dir, command), dir } };
+}
+
+/**
+ * Whether a directory mkdir just created is a cgroup. On a cgroup2 mount the
+ * kernel populates a new directory with cgroup.procs and the rest at once;
+ * on any other filesystem mkdir gives an empty directory, and the probe's
+ * `echo $$ > cgroup.procs` would then create a plain file and "succeed".
+ * That is the layout of a machine whose kernel knows cgroup v2 (so
+ * /proc/self/cgroup has a "0::/" line) but has it mounted somewhere else or
+ * not at all, with a tmpfs at /sys/fs/cgroup. statfs settles it when it can;
+ * when it cannot (no statfsSync, or an error) the cgroup.procs check alone
+ * decides, since the kernel never leaves a new cgroup without it.
+ */
+function isCgroup2Dir(dir: string, fsType: (dir: string) => number | null): boolean {
+  const type = fsType(dir);
+  if (type !== null && type !== CGROUP2_SUPER_MAGIC) return false;
+  return fs.existsSync(path.join(dir, "cgroup.procs"));
 }
 
 /**
@@ -237,11 +277,21 @@ function signal(pid: number, sig: NodeJS.Signals): void {
   }
 }
 
+/**
+ * rmdir is all a cgroup directory accepts. A directory refused as not a
+ * cgroup is an ordinary one that may hold a plain file, so that case falls
+ * back to a recursive remove. Best effort either way; an empty cgroup
+ * directory is harmless.
+ */
 function removeQuietly(dir: string): void {
   try {
     fs.rmdirSync(dir);
   } catch {
-    // Best effort; an empty cgroup directory is harmless.
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Leave it.
+    }
   }
 }
 
@@ -251,12 +301,14 @@ function errorCode(err: unknown): string {
 }
 
 /**
- * Where `file` would be found by spawn: an absolute path, or the first PATH
- * entry that has it. The wrapper turns a missing command into "sh: not
- * found" with exit 127 instead of the spawn error the report expects, so the
- * caller only wraps commands that exist.
+ * Where `file` would be found by spawn: a path as given, or the first PATH
+ * entry that has it. spawn changes into the run's `cwd` before execvp, so a
+ * relative command and a relative PATH entry are both resolved against that
+ * directory, not against the supervisor's own. The wrapper turns a missing
+ * command into "sh: not found" with exit 127 instead of the spawn error the
+ * report expects, so the caller only wraps commands that exist.
  */
-export function resolveExecutable(file: string, envPath: string | undefined): string | null {
+export function resolveExecutable(file: string, envPath: string | undefined, cwd: string): string | null {
   const executable = (candidate: string) => {
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
@@ -265,10 +317,13 @@ export function resolveExecutable(file: string, envPath: string | undefined): st
       return false;
     }
   };
-  if (file.includes("/")) return executable(file) ? path.resolve(file) : null;
+  if (file.includes("/")) {
+    const candidate = path.resolve(cwd, file);
+    return executable(candidate) ? candidate : null;
+  }
   for (const entry of (envPath ?? "").split(":")) {
     if (!entry) continue;
-    const candidate = path.join(entry, file);
+    const candidate = path.resolve(cwd, entry, file);
     if (executable(candidate)) return candidate;
   }
   return null;
