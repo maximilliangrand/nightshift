@@ -72,6 +72,12 @@ export interface Instrumentation {
   notes: string[];
 }
 
+/** What the meter may know about the run beyond its stdout. */
+export interface MeterContext {
+  /** The argv actually spawned, after instrument(). */
+  argv: string[];
+}
+
 export interface Adapter {
   /** Name used by --adapter and in reports. */
   readonly name: string;
@@ -82,7 +88,7 @@ export interface Adapter {
    * command speaks this adapter's format even if it does not look like it.
    */
   instrument(argv: string[], opts: { budgetUsd?: number; forced?: boolean }): Instrumentation;
-  createMeter(hooks: MeterHooks): Meter;
+  createMeter(hooks: MeterHooks, context?: MeterContext): Meter;
 }
 
 /** Any command whose stdout already speaks an adapter's format: touch nothing, meter everything. */

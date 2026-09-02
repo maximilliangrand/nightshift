@@ -304,6 +304,29 @@ export const CASES: Case[] = [
       killedBy("budget")(r, code) ??
       (r.usage.estimatedUsd > 3 ? `estimate ${r.usage.estimatedUsd} suggests running totals were added up` : null),
   },
+  {
+    name: "openclaw-budget-blower",
+    failure: "reports $50 of usage at the end",
+    caught: "--budget with --adapter openclaw; the JSON envelope is priced when it lands",
+    origin: "design",
+    agent: "openclaw-budget-blower.ts",
+    // A state dir that does not exist keeps the transcript tailer away from a real ~/.openclaw on the machine running the suite.
+    env: { OPENCLAW_STATE_DIR: "openclaw-state-none" },
+    limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      killedBy("budget")(r, code) ?? (r.usage.totalTokens !== 5_000_003 ? `counted ${r.usage.totalTokens} tokens, wanted the envelope's 5000003` : null),
+  },
+  {
+    name: "openclaw-transcript-blower",
+    failure: "spends in the gateway, prints nothing",
+    caught: "--budget via the session transcript tailer, before the envelope",
+    origin: "design",
+    agent: "openclaw-transcript-blower.ts",
+    env: { OPENCLAW_STATE_DIR: "openclaw-state" },
+    limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      killedBy("budget")(r, code) ?? (r.usage.messages < 2 ? `saw ${r.usage.messages} transcript messages, wanted the live count` : null),
+  },
 ];
 
 function cgroupNote(r: Report): string {

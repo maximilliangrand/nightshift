@@ -136,7 +136,7 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
       : undefined,
     onEvent: (line) => events?.write(line + "\n"),
     onUnpricedModel: (model) => notes.push(`no list price for ${model}; live budget could not count its tokens`),
-  });
+  }, { argv: effective });
   const usage: UsageTotals = meter.totals;
 
   // Guards that are pure arithmetic over the context run on every chunk as
