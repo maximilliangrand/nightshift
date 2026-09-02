@@ -10,7 +10,7 @@ nightshift run --budget 5usd --max-runtime 2h --idle-timeout 15m --report telegr
 Zero dependencies. One command. Works with Claude Code, Codex, OpenClaw, Hermes, a shell script, anything you can start from a terminal.
 
 [![ci](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml/badge.svg)](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml)
-[![crash suite](https://img.shields.io/badge/crash_suite-20%2F20_failure_modes_caught-2ea44f)](docs/CRASHTEST.md)
+[![crash suite](https://img.shields.io/badge/crash_suite-20%2F20_failure_modes_caught-2ea44f)](docs/CRASHTEST.md) <!-- cases:badge -->
 [![npm](https://img.shields.io/npm/v/nightshift)](https://www.npmjs.com/package/nightshift)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -206,7 +206,7 @@ Exit codes: `0` completed · `1` failed · `2` killed by a limit · `3` postcond
 
 ## The crash suite
 
-Claims about supervisors are cheap. `bun run crashtest` runs twenty deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**.
+Claims about supervisors are cheap. `bun run crashtest` runs <!-- cases:count -->20<!-- /cases:count --> deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**.
 
 ```
 nightshift crash suite · 20 failure modes
@@ -236,6 +236,8 @@ nightshift crash suite · 20 failure modes
 ```
 
 It runs in CI on macOS and Linux. Add a case when you meet a new way for an agent to go wrong; see [docs/CRASHTEST.md](docs/CRASHTEST.md).
+
+Contributing a failure mode: the scoreboard of every case and where it came from is [docs/CASES.md](docs/CASES.md); how an escape becomes a case is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What it is not
 

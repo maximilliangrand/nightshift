@@ -44,9 +44,9 @@ A case passes only if `expect` returns `null` and step 5 finds nothing. The suit
 ## Adding a case
 
 1. Write the agent in `crashtest/agents/<name>.ts` (or `.sh`). Keep it under twenty lines; the point should be obvious from reading it.
-2. Add an entry to `CASES` in `crashtest/run.ts` with the limits that should catch it and an `expect` that checks the outcome, the guard, and `survivors.length === 0`.
+2. Append an entry to the end of `CASES` in `crashtest/run.ts` with the limits that should catch it, an `expect` that checks the outcome, the guard, and `survivors.length === 0`, a `caught` phrase saying what stops it, and an `origin` (`incident`, `design`, `review`, `red team` or `issue #N`).
 3. Run just that case while iterating: `bun run crashtest <name>`.
-4. Update the count in the README badge and the block quoted there.
+4. Run `bun scripts/cases.ts --write`. It updates the README badge and count and the scoreboard in [CASES.md](CASES.md) from `CASES`; `--check` is the CI gate that fails when they drift. `bun run cases` prints the table without running anything.
 
 Cases should reproduce something that actually happened, or something you are certain will. The suite is a record of how agents fail, not a list of everything that could.
 

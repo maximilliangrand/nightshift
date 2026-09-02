@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and how it works
+    url: https://github.com/maximilliangrand/nightshift#readme
+    about: The README covers the limits, the kill, the ledger, metering and delivery. Read it before filing.
+  - name: The crash suite scoreboard
+    url: https://github.com/maximilliangrand/nightshift/blob/main/docs/CASES.md
+    about: Every case, what catches it, and where it came from.
