@@ -1,6 +1,6 @@
 {
   "name": "nightshift",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Supervisor for unattended AI agent runs. Hard limits on time, tokens, dollars, disk and side effects; a morning report of what happened while you slept. Zero dependencies.",
   "license": "MIT",
   "author": "Maxim Gagiev <maximgagiev@myg-media.com>",

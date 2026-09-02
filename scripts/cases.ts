@@ -42,7 +42,7 @@ export function parseCaseNames(source: string): string[] {
 /** Every commit that touched crashtest/run.ts, oldest first, with what it contained. */
 export function gitSnapshots(root: string): Snapshot[] {
   const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
-  const shas = git(["log", "--reverse", "--format=%h", "--", RUN_TS]).trim().split("\n").filter(Boolean);
+  const shas = git(["log", "--reverse", "--first-parent", "--format=%h", "--", RUN_TS]).trim().split("\n").filter(Boolean);
   return shas.map((sha) => {
     const pkg = JSON.parse(git(["show", `${sha}:package.json`])) as { version: string };
     return { sha, version: pkg.version, names: parseCaseNames(git(["show", `${sha}:${RUN_TS}`])) };
