@@ -3,9 +3,10 @@
  * matches() says yes; a name picks that one and forces it.
  */
 import { claudeAdapter } from "./claude.js";
+import { codexAdapter } from "./codex.js";
 import type { Adapter } from "./adapter.js";
 
-export const ADAPTERS: Adapter[] = [claudeAdapter];
+export const ADAPTERS: Adapter[] = [claudeAdapter, codexAdapter];
 
 export const ADAPTER_NAMES = ["auto", "none", ...ADAPTERS.map((a) => a.name)] as const;
 export type AdapterChoice = (typeof ADAPTER_NAMES)[number];

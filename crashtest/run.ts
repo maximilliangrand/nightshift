@@ -293,6 +293,17 @@ export const CASES: Case[] = [
       r.survivors.length ? `survivors ${r.survivors.join(",")}` : null,
     detail: (r) => `${cgroupNote(r)}; caught ${r.orphans?.found.length} escapee`,
   },
+  {
+    name: "codex-budget-blower",
+    failure: "speaks codex JSONL, spends without limit",
+    caught: "--budget with --adapter codex; running totals replace, never sum",
+    origin: "design",
+    agent: "codex-blower.ts",
+    limits: ["--adapter", "codex", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      killedBy("budget")(r, code) ??
+      (r.usage.estimatedUsd > 3 ? `estimate ${r.usage.estimatedUsd} suggests running totals were added up` : null),
+  },
 ];
 
 function cgroupNote(r: Report): string {
