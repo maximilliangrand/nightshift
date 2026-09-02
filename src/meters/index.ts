@@ -3,9 +3,10 @@
  * matches() says yes; a name picks that one and forces it.
  */
 import { claudeAdapter } from "./claude.js";
+import { openclawAdapter } from "./openclaw.js";
 import type { Adapter } from "./adapter.js";
 
-export const ADAPTERS: Adapter[] = [claudeAdapter];
+export const ADAPTERS: Adapter[] = [claudeAdapter, openclawAdapter];
 
 export const ADAPTER_NAMES = ["auto", "none", ...ADAPTERS.map((a) => a.name)] as const;
 export type AdapterChoice = (typeof ADAPTER_NAMES)[number];
@@ -22,5 +23,5 @@ export function resolveAdapter(choice: string, argv: string[]): { adapter: Adapt
   return { adapter, forced: !adapter.matches(argv) };
 }
 
-export type { Adapter, Meter, MeterHooks, Instrumentation, UsageTotals } from "./adapter.js";
+export type { Adapter, Meter, MeterContext, MeterHooks, Instrumentation, UsageTotals } from "./adapter.js";
 export { emptyUsage } from "./adapter.js";

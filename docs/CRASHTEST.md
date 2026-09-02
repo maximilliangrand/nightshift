@@ -40,6 +40,8 @@ A case passes only if `expect` returns `null` and step 5 finds nothing. The suit
 | `kill-file` | a well-behaved minute-long job | `nightshift stop latest` from the harness |
 | `postcondition` | exits 0, never writes the required file | `--require`, exit code 3 |
 | `stdin-waiter` | waits on stdin | stdin is closed by default, exits at once |
+| `openclaw-budget-blower` | prints the JSON envelope `openclaw agent --json` prints at the end of a turn, with $50 of usage at the ceiling price, then lingers | `--budget` with `--adapter openclaw`, fired on the chunk that carried the envelope |
+| `openclaw-transcript-blower` | behaves like the OpenClaw gateway: registers a session in a fake `OPENCLAW_STATE_DIR`, appends 100k tokens to the transcript every 100 ms, prints nothing | `--budget`, from the transcript tailer, while stdout is still silent |
 
 ## Adding a case
 
@@ -56,4 +58,4 @@ Cases should reproduce something that actually happened, or something you are ce
 - The `--idle-timeout` watchdog measures silence. An agent that prints a dot every second while doing nothing is not idle by that definition; `--max-runtime` and `--budget` are the limits for that shape.
 - Disk growth outside the watched directories and off the working volume.
 - Network side effects that do not go through the ledger or the hook.
-- Anything that needs a real model. `budget-blower.ts` fakes the stream; the metering itself is covered by `test/claude-meter.test.ts` against events captured from a real run.
+- Anything that needs a real model. `budget-blower.ts` fakes the stream; the metering itself is covered by `test/claude-meter.test.ts` against events captured from a real run. The two `openclaw-*` agents fake the envelope and the transcript the same way, from shapes captured from OpenClaw 2026.4.10 (see [docs/ADAPTERS-openclaw.md](ADAPTERS-openclaw.md)); both set `OPENCLAW_STATE_DIR` so the suite never reads a real `~/.openclaw`.

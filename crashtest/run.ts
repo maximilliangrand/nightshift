@@ -1,5 +1,5 @@
 /**
- * The crash suite. Twenty cases of agents that misbehave the way real ones did, each
+ * The crash suite. Agents that misbehave the way real ones did, each
  * run under nightshift with the limit that should catch it. A case passes
  * only if the report says what happened *and* nothing is left running.
  *
@@ -211,6 +211,25 @@ const CASES: Case[] = [
     limits: ["--max-runtime", "10s"],
     expect: (r) =>
       r.outcome !== "completed" ? `outcome ${r.outcome}` : r.durationMs > 5000 ? `took ${r.durationMs}ms; stdin was not closed` : null,
+  },
+  {
+    name: "openclaw-budget-blower",
+    failure: "reports $50 of usage at the end",
+    agent: "openclaw-budget-blower.ts",
+    // A state dir that does not exist keeps the transcript tailer away from a real ~/.openclaw on the machine running the suite.
+    env: { OPENCLAW_STATE_DIR: "openclaw-state-none" },
+    limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      killedBy("budget")(r, code) ?? (r.usage.totalTokens !== 5_000_003 ? `counted ${r.usage.totalTokens} tokens, wanted the envelope's 5000003` : null),
+  },
+  {
+    name: "openclaw-transcript-blower",
+    failure: "spends in the gateway, prints nothing",
+    agent: "openclaw-transcript-blower.ts",
+    env: { OPENCLAW_STATE_DIR: "openclaw-state" },
+    limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      killedBy("budget")(r, code) ?? (r.usage.messages < 2 ? `saw ${r.usage.messages} transcript messages, wanted the live count` : null),
   },
 ];
 
