@@ -1,5 +1,5 @@
 {
-  "name": "nightshift",
+  "name": "nightshift-cli",
   "version": "0.2.0",
   "description": "Supervisor for unattended AI agent runs. Hard limits on time, tokens, dollars, disk and side effects; a morning report of what happened while you slept. Zero dependencies.",
   "license": "MIT",

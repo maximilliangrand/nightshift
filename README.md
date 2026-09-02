@@ -11,7 +11,7 @@ Zero dependencies. One command. Works with Claude Code, Codex, OpenClaw, Hermes,
 
 [![ci](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml/badge.svg)](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml)
 [![crash suite](https://img.shields.io/badge/crash_suite-26%2F26_failure_modes_caught-2ea44f)](docs/CASES.md) <!-- cases:badge -->
-[![npm](https://img.shields.io/npm/v/nightshift)](https://www.npmjs.com/package/nightshift)
+[![npm](https://img.shields.io/npm/v/nightshift-cli)](https://www.npmjs.com/package/nightshift-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## Why
@@ -28,14 +28,16 @@ None of these are model problems. They are supervision problems, and the supervi
 
 ## Install
 
+The npm package is `nightshift-cli` (npm reserves the bare name for its lookalike rule); the binary it installs is `nightshift`.
+
 ```bash
-npm install -g nightshift      # Node 20+, macOS or Linux
+npm install -g nightshift-cli   # Node 20+, macOS or Linux; the command is `nightshift`
 ```
 
 or run it without installing:
 
 ```bash
-npx nightshift run --max-runtime 30m -- ./overnight.sh
+npx nightshift-cli run --max-runtime 30m -- ./overnight.sh
 ```
 
 ## What a run looks like
