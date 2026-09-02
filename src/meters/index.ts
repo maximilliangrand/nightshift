@@ -24,5 +24,5 @@ export function resolveAdapter(choice: string, argv: string[]): { adapter: Adapt
   return { adapter, forced: !adapter.matches(argv) };
 }
 
-export type { Adapter, Meter, MeterContext, MeterHooks, Instrumentation, UsageTotals } from "./adapter.js";
+export type { Adapter, InstrumentOptions, Meter, MeterContext, MeterHooks, Instrumentation, UsageTotals } from "./adapter.js";
 export { emptyUsage } from "./adapter.js";

@@ -50,27 +50,49 @@ const pretty = JSON.stringify(envelope, null, 2) + "\n";
 
 // One assistant line of the session transcript the same run appended under
 // ~/.openclaw/agents/main/sessions/<sessionId>.jsonl. The user line before it
-// carries the prompt and injected memories and is not needed here.
-const transcriptMessage = (id: string, usage: Record<string, unknown>, content: unknown[] = [{ type: "text", text: "pong" }]) => ({
+// carries the prompt and injected memories and is not needed here. The
+// timestamp defaults to now because a message older than the run is history.
+const transcriptMessage = (id: string, usage: Record<string, unknown>, content: unknown[] = [{ type: "text", text: "pong" }], at: number = Date.now()) => ({
   type: "message",
   id,
   parentId: "f6778283",
-  timestamp: "2026-09-02T19:07:59.922Z",
+  timestamp: new Date(at).toISOString(),
   message: { role: "assistant", content, stopReason: "stop", api: "ollama", provider: "ollama", model: "deepseek-v4-pro:cloud", usage },
 });
+/** The first line of every real transcript: the session header, stamped when the session was created. */
+const transcriptHeader = (id: string, at: number) => ({ type: "session", version: 3, id, timestamp: new Date(at).toISOString(), cwd: "/home/user/.openclaw/workspace" });
 const observedUsage = { input: 22915, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 22918, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const SESSION = "808dd031-cb90-47d5-9e4c-644e672e5c66";
+const EXPLICIT = "nightshift-probe-1";
+const EXPLICIT_KEY = `agent:main:explicit:${EXPLICIT}`;
 
 const CEILING_ESTIMATE = (22915 * 10 + 3 * 50) / 1e6;
 
+const jsonl = (lines: unknown[]) => lines.map((l) => JSON.stringify(l)).join("\n") + (lines.length ? "\n" : "");
+
+/**
+ * A state dir with one agent's store. Every entry gets the shared transcript
+ * as its sessionFile unless it names its own; `writeTranscript` makes one.
+ */
 function fakeStateDir(entries: Record<string, unknown>, transcriptLines: unknown[], agent = "main"): { dir: string; transcript: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-openclaw-"));
+  const transcript = writeTranscript(dir, agent, SESSION, transcriptLines);
+  const withFile = Object.fromEntries(Object.entries(entries).map(([key, value]) => [key, { sessionFile: transcript, ...(value as object) }]));
+  fs.writeFileSync(path.join(dir, "agents", agent, "sessions", "sessions.json"), JSON.stringify(withFile));
+  return { dir, transcript };
+}
+
+function writeTranscript(dir: string, agent: string, sessionId: string, lines: unknown[]): string {
   const sessions = path.join(dir, "agents", agent, "sessions");
   fs.mkdirSync(sessions, { recursive: true });
-  const transcript = path.join(sessions, "808dd031-cb90-47d5-9e4c-644e672e5c66.jsonl");
-  fs.writeFileSync(transcript, transcriptLines.map((l) => JSON.stringify(l)).join("\n") + (transcriptLines.length ? "\n" : ""));
-  const withFile = Object.fromEntries(Object.entries(entries).map(([key, value]) => [key, { sessionFile: transcript, ...(value as object) }]));
-  fs.writeFileSync(path.join(sessions, "sessions.json"), JSON.stringify(withFile));
-  return { dir, transcript };
+  const transcript = path.join(sessions, `${sessionId}.jsonl`);
+  fs.writeFileSync(transcript, jsonl(lines));
+  return transcript;
+}
+
+function noteTaker(): { notes: string[]; hooks: { onNote: (n: string) => void } } {
+  const notes: string[] = [];
+  return { notes, hooks: { onNote: (n) => notes.push(n) } };
 }
 
 describe("isOpenClawCommand", () => {
@@ -89,6 +111,16 @@ describe("isOpenClawCommand", () => {
     expect(openClawStateDir(["openclaw", "--profile", "work", "agent"], {})).toBe(path.join(os.homedir(), ".openclaw-work"));
     expect(openClawStateDir(["openclaw", "--dev", "agent"], {})).toBe(path.join(os.homedir(), ".openclaw-dev"));
     expect(openClawStateDir(["openclaw", "agent"], { OPENCLAW_STATE_DIR: "/tmp/oc" })).toBe("/tmp/oc");
+  });
+  test("resolves the state dir the way OpenClaw does: ~ expands, relative is the run's cwd, OPENCLAW_HOME is the home", () => {
+    expect(openClawStateDir([], { OPENCLAW_STATE_DIR: "~/oc" }, "/run/here")).toBe(path.join(os.homedir(), "oc"));
+    expect(openClawStateDir([], { OPENCLAW_STATE_DIR: "~" }, "/run/here")).toBe(os.homedir());
+    expect(openClawStateDir([], { OPENCLAW_STATE_DIR: "state" }, "/run/here")).toBe("/run/here/state");
+    expect(openClawStateDir([], { OPENCLAW_STATE_DIR: " /abs/oc " }, "/run/here")).toBe("/abs/oc");
+    expect(openClawStateDir([], { OPENCLAW_HOME: "/srv/home" }, "/run/here")).toBe("/srv/home/.openclaw");
+    expect(openClawStateDir(["openclaw", "--profile", "work", "agent"], { OPENCLAW_HOME: "~/h" }, "/run/here")).toBe(path.join(os.homedir(), "h", ".openclaw-work"));
+    expect(openClawStateDir(["openclaw", "--dev", "agent"], { OPENCLAW_HOME: "homes" }, "/run/here")).toBe("/run/here/homes/.openclaw-dev");
+    expect(openClawStateDir([], { OPENCLAW_HOME: "/srv/home", OPENCLAW_STATE_DIR: "/abs/oc" }, "/run/here")).toBe("/abs/oc");
   });
 });
 
@@ -116,10 +148,24 @@ describe("instrumentOpenClawArgv", () => {
     expect(local.notes).toHaveLength(1);
   });
   test("forced onto a command that is not openclaw, it touches nothing", () => {
-    const r = instrumentOpenClawArgv(["bun", "fake.ts"], { forced: true });
+    const r = instrumentOpenClawArgv(["bun", "fake.ts"], { forced: true, runId: "r1" });
     expect(r.argv).toEqual(["bun", "fake.ts"]);
     expect(r.metered).toBe(true);
     expect(r.renders).toBe(false);
+  });
+  test("gives the run its own session id when the command has none, and says so", () => {
+    const r = instrumentOpenClawArgv(["openclaw", "agent", "--to", "+15555550123", "-m", "go"], { runId: "20260902-214900-abc123-nightly" });
+    expect(r.argv).toEqual(["openclaw", "agent", "--to", "+15555550123", "-m", "go", "--json", "--session-id", "nightshift-20260902-214900-abc123-nightly"]);
+    expect(r.notes).toEqual(["run isolated in its own OpenClaw session nightshift-20260902-214900-abc123-nightly; pass --session-id yourself to continue an existing one"]);
+    expect(sessionSelector(r.argv).sessionId).toBe("nightshift-20260902-214900-abc123-nightly");
+  });
+  test("leaves a --session-id the user chose alone, in either spelling", () => {
+    const spaced = instrumentOpenClawArgv(["openclaw", "agent", "--session-id", "ops", "-m", "go"], { runId: "r1" });
+    expect(spaced.argv.filter((a) => a.startsWith("--session-id"))).toEqual(["--session-id"]);
+    expect(spaced.notes).toEqual([]);
+    const joined = instrumentOpenClawArgv(["openclaw", "agent", "--session-id=ops", "-m", "go"], { runId: "r1" });
+    expect(joined.argv.filter((a) => a.startsWith("--session-id"))).toEqual(["--session-id=ops"]);
+    expect(sessionSelector(joined.argv).sessionId).toBe("ops");
   });
 });
 
@@ -222,11 +268,11 @@ describe("OpenClawMeter on stdout", () => {
 });
 
 describe("OpenClawMeter on the session transcript", () => {
-  test("finds the transcript through the store and counts messages as they land", () => {
+  test("finds the transcript through the store by explicit id and counts messages as they land", () => {
     const now = Date.now();
-    const { dir, transcript } = fakeStateDir({ "agent:main:explicit:nightshift-probe-1": { sessionId: "808dd031-cb90-47d5-9e4c-644e672e5c66", startedAt: now, updatedAt: now } }, []);
+    const { dir, transcript } = fakeStateDir({ [EXPLICIT_KEY]: { sessionId: SESSION, startedAt: now, updatedAt: now } }, [transcriptHeader(SESSION, now)]);
     const texts: string[] = [];
-    const meter = new OpenClawMeter({ onText: (t) => texts.push(t) }, { pollMs: 0, stateDir: dir, selector: { sessionId: "nightshift-probe-1" }, startedAt: now - 500 });
+    const meter = new OpenClawMeter({ onText: (t) => texts.push(t) }, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now - 500 });
     meter.sync();
     expect(meter.totals.totalTokens).toBe(0);
     const toolTurn = transcriptMessage("m1", { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } }, [
@@ -243,7 +289,7 @@ describe("OpenClawMeter on the session transcript", () => {
     expect(meter.totals.filesWritten).toEqual(["/tmp/out.txt"]);
     expect(meter.totals.commands[0]).toBe("curl -H 'Authorization: Bearer [redacted]' https://x");
     expect(texts[0]).toBe("  ⚙ exec: curl -H 'Authorization: Bearer [redacted]' https://x\n");
-    expect(meter.totals.sessionId).toBe("808dd031-cb90-47d5-9e4c-644e672e5c66");
+    expect(meter.totals.sessionId).toBe(SESSION);
     // A partial line waits for its newline; the same id again is an update, not a second message.
     const second = JSON.stringify(transcriptMessage("m2", { input: 200, output: 20, cacheRead: 50, cacheWrite: 5, cost: { total: 0.002 } }));
     fs.appendFileSync(transcript, second.slice(0, 30));
@@ -260,8 +306,8 @@ describe("OpenClawMeter on the session transcript", () => {
 
   test("a zero cost with tokens behind it is not a report; the ceiling estimate stands", () => {
     const now = Date.now();
-    const { dir } = fakeStateDir({ "agent:main:main": { sessionId: "808dd031-cb90-47d5-9e4c-644e672e5c66", startedAt: now } }, [transcriptMessage("m1", observedUsage)]);
-    const meter = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { agentId: "main" }, startedAt: now });
+    const { dir } = fakeStateDir({ [EXPLICIT_KEY]: { sessionId: SESSION, startedAt: now } }, [transcriptMessage("m1", observedUsage)]);
+    const meter = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
     meter.sync();
     expect(meter.totals.totalTokens).toBe(22918);
     expect(meter.totals.actualUsd).toBeUndefined();
@@ -278,8 +324,8 @@ describe("OpenClawMeter on the session transcript", () => {
 
   test("the envelope wins when it reports more than the tailer saw", () => {
     const now = Date.now();
-    const { dir } = fakeStateDir({ "agent:main:main": { sessionId: "808dd031-cb90-47d5-9e4c-644e672e5c66", startedAt: now } }, [transcriptMessage("m1", { input: 100, output: 1 })]);
-    const meter = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: {}, startedAt: now });
+    const { dir } = fakeStateDir({ [EXPLICIT_KEY]: { sessionId: SESSION, startedAt: now } }, [transcriptMessage("m1", { input: 100, output: 1 })]);
+    const meter = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
     meter.sync();
     expect(meter.totals.totalTokens).toBe(101);
     meter.feed(pretty);
@@ -291,31 +337,193 @@ describe("OpenClawMeter on the session transcript", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test("ignores sessions that started before the run or belong to another agent", () => {
+  // Finding #3: reconcile() used to clear the per-message map, so a message
+  // the tailer read after the envelope was added on top of the envelope.
+  test("the envelope is a floor, not a reset: a transcript message read after it adds nothing", () => {
+    const now = Date.now();
+    const { dir, transcript } = fakeStateDir({ [EXPLICIT_KEY]: { sessionId: SESSION, startedAt: now } }, []);
+    const events: string[] = [];
+    const meter = new OpenClawMeter({ onEvent: (e) => events.push(e) }, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
+    meter.sync();
+    meter.feed(pretty);
+    expect(meter.totals.totalTokens).toBe(22918);
+    const late = transcriptMessage("m1", observedUsage, [{ type: "toolCall", id: "c1", name: "exec", arguments: { command: "ls" } }]);
+    fs.appendFileSync(transcript, JSON.stringify(late) + "\n");
+    meter.sync();
+    meter.end();
+    expect(meter.totals.totalTokens).toBe(22918);
+    expect(meter.totals.inputTokens).toBe(22915);
+    expect(meter.totals.messages).toBe(1);
+    expect(meter.totals.estimatedUsd).toBeCloseTo(CEILING_ESTIMATE, 9);
+    // What the message did is still recorded; only its cost is not counted again.
+    expect(meter.totals.toolCalls).toEqual({ exec: 1 });
+    expect(meter.totals.commands).toEqual(["ls"]);
+    expect(events).toHaveLength(2);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Findings #5 and #8: the newest entry by time used to be taken when argv
+  // named no session, which on a gateway serving chat channels was someone
+  // else's turn.
+  test("never picks a session by time: with no id to match, the tailer contributes nothing and end() says so", () => {
+    const now = Date.now();
+    const { dir } = fakeStateDir({ "agent:main:main": { sessionId: SESSION, startedAt: now, updatedAt: now } }, [transcriptMessage("m1", observedUsage)]);
+    const { notes, hooks } = noteTaker();
+    const meter = new OpenClawMeter(hooks, { pollMs: 0, stateDir: dir, selector: {}, startedAt: now - 500 });
+    meter.sync(true);
+    expect(meter.totals.totalTokens).toBe(0);
+    const byAgent = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { agentId: "main" }, startedAt: now - 500 });
+    byAgent.sync(true);
+    expect(byAgent.totals.totalTokens).toBe(0);
+    meter.end();
+    expect(notes).toEqual([`openclaw transcript never located under ${dir}; usage came from the final envelope only`]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("matches the explicit key or the id, not the newest entry, and --agent narrows an explicit id to that agent", () => {
     const now = Date.now();
     const { dir } = fakeStateDir(
       {
-        "agent:main:telegram:direct:1": { sessionId: "old", startedAt: now - 60_000, updatedAt: now - 60_000 },
-        "agent:ops:main": { sessionId: "808dd031-cb90-47d5-9e4c-644e672e5c66", startedAt: now },
+        "agent:main:telegram:direct:1": { sessionId: "chat-turn", startedAt: now + 100, updatedAt: now + 100 },
+        [EXPLICIT_KEY]: { sessionId: SESSION, startedAt: now, sessionFile: undefined },
       },
-      [transcriptMessage("m1", observedUsage)],
+      [transcriptMessage("m1", { input: 5_000_000, output: 1 })],
     );
-    const other = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { agentId: "main" }, startedAt: now });
-    other.sync();
-    expect(other.totals.totalTokens).toBe(0);
-    const stale = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: {}, startedAt: now + 10_000 });
-    stale.sync(true);
-    expect(stale.totals.totalTokens).toBe(0);
-    const right = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { agentId: "ops" }, startedAt: now });
-    right.sync();
-    expect(right.totals.totalTokens).toBe(22918);
+    const own = writeTranscript(dir, "main", SESSION + "-own", [transcriptMessage("m1", { input: 100, output: 1 })]);
+    const store = path.join(dir, "agents", "main", "sessions", "sessions.json");
+    const entries = JSON.parse(fs.readFileSync(store, "utf8")) as Record<string, Record<string, unknown>>;
+    (entries[EXPLICIT_KEY] as Record<string, unknown>).sessionFile = own;
+    fs.writeFileSync(store, JSON.stringify(entries));
+    const byKey = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
+    byKey.sync();
+    expect(byKey.totals.totalTokens).toBe(101);
+    expect(byKey.totals.sessionId).toBe(SESSION);
+    const byId = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { sessionId: SESSION }, startedAt: now });
+    byId.sync();
+    expect(byId.totals.totalTokens).toBe(101);
+    // The same explicit id under another agent is another session.
+    const ops = writeTranscript(dir, "ops", "ops-session", [transcriptMessage("m1", { input: 7, output: 1 })]);
+    fs.writeFileSync(path.join(dir, "agents", "ops", "sessions", "sessions.json"), JSON.stringify({ [`agent:ops:explicit:${EXPLICIT}`]: { sessionId: "ops-session", sessionFile: ops, startedAt: now } }));
+    const narrowed = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT, agentId: "ops" }, startedAt: now });
+    narrowed.sync();
+    expect(narrowed.totals.totalTokens).toBe(8);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Findings #4 and #9: a reused session's transcript used to be read from
+  // byte 0, billing months of history to the run that reused it.
+  test("a reused session bills only what this run appended", () => {
+    const now = Date.now();
+    const monthsAgo = now - 60 * 86_400_000;
+    const history = [transcriptHeader(SESSION, monthsAgo), transcriptMessage("h1", { input: 5_000_000, output: 100 }, undefined, monthsAgo), transcriptMessage("h2", { input: 5_000_000, output: 100 }, undefined, monthsAgo + 1000)];
+    // OpenClaw refreshes the store entry's startedAt on reuse; only the file says how old the session is.
+    const { dir, transcript } = fakeStateDir({ "agent:main:explicit:nightly": { sessionId: SESSION, startedAt: now, updatedAt: now } }, history);
+    const { notes, hooks } = noteTaker();
+    const meter = new OpenClawMeter(hooks, { pollMs: 0, stateDir: dir, selector: { sessionId: "nightly" }, startedAt: now });
+    meter.sync();
+    expect(meter.totals.totalTokens).toBe(0);
+    expect(meter.totals.messages).toBe(0);
+    expect(notes).toEqual([`openclaw session ${SESSION} existed before this run; only what it appended after ${new Date(now).toISOString()} is counted`]);
+    // A straggler with an old timestamp is history too; a fresh message is this run's.
+    fs.appendFileSync(transcript, jsonl([transcriptMessage("h3", { input: 5_000_000, output: 1 }, undefined, monthsAgo + 2000), transcriptMessage("m1", { input: 100, output: 1 })]));
+    meter.sync();
+    expect(meter.totals.totalTokens).toBe(101);
+    expect(meter.totals.messages).toBe(1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a session the store dates before the run is read from where it stands, even without a header line", () => {
+    const now = Date.now();
+    const { dir, transcript } = fakeStateDir({ "agent:main:explicit:nightly": { sessionId: SESSION, startedAt: now - 86_400_000, updatedAt: now } }, [
+      { type: "message", id: "h1", message: { role: "assistant", content: [], model: "deepseek-v4-pro:cloud", usage: { input: 5_000_000, output: 1 } } },
+    ]);
+    const meter = new OpenClawMeter({}, { pollMs: 0, stateDir: dir, selector: { sessionId: "nightly" }, startedAt: now });
+    meter.sync();
+    expect(meter.totals.totalTokens).toBe(0);
+    fs.appendFileSync(transcript, jsonl([transcriptMessage("m1", { input: 100, output: 1 })]));
+    meter.sync();
+    expect(meter.totals.totalTokens).toBe(101);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Finding #6: openSync and readSync were outside the try, so an unreadable
+  // transcript threw out of the poll timer and out of end().
+  test("sync never throws: an unreadable transcript is one note, not a crash", async () => {
+    const now = Date.now();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-openclaw-"));
+    const sessions = path.join(dir, "agents", "main", "sessions");
+    const asDirectory = path.join(sessions, "not-a-file");
+    fs.mkdirSync(asDirectory, { recursive: true });
+    fs.writeFileSync(path.join(sessions, "sessions.json"), JSON.stringify({ [EXPLICIT_KEY]: { sessionId: SESSION, sessionFile: asDirectory, startedAt: now } }));
+    const notes: string[] = [];
+    // The note hook throws too, to show the timer survives a hook that does.
+    const hooks = { onNote: (n: string) => { notes.push(n); throw new Error("hook failed"); } };
+    const meter = new OpenClawMeter(hooks, { pollMs: 5, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(() => meter.sync()).not.toThrow();
+    expect(() => meter.sync(true)).not.toThrow();
+    expect(() => meter.end()).not.toThrow();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(new RegExp(`^openclaw transcript ${asDirectory} could not be read \\(EISDIR\\)`));
+    expect(meter.totals.totalTokens).toBe(0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a transcript that is not written yet is not a failure", () => {
+    const now = Date.now();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-openclaw-"));
+    const sessions = path.join(dir, "agents", "main", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const later = path.join(sessions, "later.jsonl");
+    fs.writeFileSync(path.join(sessions, "sessions.json"), JSON.stringify({ [EXPLICIT_KEY]: { sessionId: SESSION, sessionFile: later, startedAt: now } }));
+    const { notes, hooks } = noteTaker();
+    const meter = new OpenClawMeter(hooks, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
+    meter.sync();
+    expect(notes).toEqual([]);
+    fs.writeFileSync(later, jsonl([transcriptMessage("m1", { input: 100, output: 1 })]));
+    meter.sync();
+    expect(meter.totals.totalTokens).toBe(101);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Finding #8, second half: once a transcript was cached the envelope's
+  // session id was never compared with it.
+  test("an envelope naming another session discards the tailer's count and reads the right transcript", () => {
+    const now = Date.now();
+    const wrong = [transcriptMessage("w1", { input: 100, output: 1 }, [{ type: "toolCall", id: "c1", name: "exec", arguments: { command: "rm -rf /" } }])];
+    const { dir } = fakeStateDir({ [EXPLICIT_KEY]: { sessionId: "someone-elses-uuid", startedAt: now } }, wrong);
+    const right = writeTranscript(dir, "main", "the-right-file", [transcriptMessage("r1", observedUsage, [{ type: "toolCall", id: "c2", name: "write", arguments: { path: "/tmp/right.txt" } }])]);
+    const store = path.join(dir, "agents", "main", "sessions", "sessions.json");
+    const entries = JSON.parse(fs.readFileSync(store, "utf8")) as Record<string, unknown>;
+    entries["agent:main:main"] = { sessionId: SESSION, sessionFile: right, startedAt: now };
+    fs.writeFileSync(store, JSON.stringify(entries));
+    const { notes, hooks } = noteTaker();
+    const meter = new OpenClawMeter(hooks, { pollMs: 0, stateDir: dir, selector: { sessionId: EXPLICIT }, startedAt: now });
+    meter.sync();
+    expect(meter.totals.totalTokens).toBe(101);
+    expect(meter.totals.commands).toEqual(["rm -rf /"]);
+    meter.feed(pretty);
+    expect(notes).toEqual([`the envelope names session ${SESSION} but the transcript tailed was session someone-elses-uuid; its 101 tokens, tool calls and commands were discarded`]);
+    expect(meter.totals.totalTokens).toBe(22918);
+    expect(meter.totals.commands).toEqual([]);
+    expect(meter.totals.toolCalls).toEqual({});
+    expect(meter.totals.sessionId).toBe(SESSION);
+    meter.end();
+    expect(meter.totals.totalTokens).toBe(22918);
+    expect(meter.totals.messages).toBe(1);
+    expect(meter.totals.toolCalls).toEqual({ write: 1 });
+    expect(meter.totals.filesWritten).toEqual(["/tmp/right.txt"]);
+    expect(meter.totals.commands).toEqual([]);
+    expect(notes).toHaveLength(1);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
   test("a missing state dir is not an error", () => {
-    const meter = new OpenClawMeter({}, { pollMs: 0, stateDir: "/nonexistent/openclaw" });
+    const { notes, hooks } = noteTaker();
+    const meter = new OpenClawMeter(hooks, { pollMs: 0, stateDir: "/nonexistent/openclaw", selector: { sessionId: EXPLICIT } });
     meter.sync(true);
     meter.end();
     expect(meter.totals.totalTokens).toBe(0);
+    expect(notes).toEqual(["openclaw transcript never located under /nonexistent/openclaw; usage came from the final envelope only"]);
   });
 });

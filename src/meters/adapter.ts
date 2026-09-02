@@ -54,6 +54,8 @@ export interface MeterHooks {
   onEvent?: (line: string) => void;
   /** A model with no price row. Fired once per model. */
   onUnpricedModel?: (model: string) => void;
+  /** Something the report should say about how the numbers were gathered. */
+  onNote?: (note: string) => void;
 }
 
 export interface Meter {
@@ -76,6 +78,16 @@ export interface Instrumentation {
 export interface MeterContext {
   /** The argv actually spawned, after instrument(). */
   argv: string[];
+  /** The directory the agent runs in; relative paths the agent sees resolve against it. */
+  cwd: string;
+}
+
+export interface InstrumentOptions {
+  budgetUsd?: number;
+  /** The caller asserts the command speaks this adapter's format even if it does not look like it. */
+  forced?: boolean;
+  /** The nightshift run id, for adapters that can tag the agent's own state with it. */
+  runId?: string;
 }
 
 export interface Adapter {
@@ -83,11 +95,8 @@ export interface Adapter {
   readonly name: string;
   /** Does this argv look like this agent? Used by --adapter auto. */
   matches(argv: string[]): boolean;
-  /**
-   * Make the invocation observable. With `forced`, the caller asserts the
-   * command speaks this adapter's format even if it does not look like it.
-   */
-  instrument(argv: string[], opts: { budgetUsd?: number; forced?: boolean }): Instrumentation;
+  /** Make the invocation observable without changing what it does. */
+  instrument(argv: string[], opts: InstrumentOptions): Instrumentation;
   createMeter(hooks: MeterHooks, context?: MeterContext): Meter;
 }
 

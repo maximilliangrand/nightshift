@@ -33,6 +33,8 @@ The badge in the README is this table's count. `bun scripts/cases.ts --check` fa
 | `codex-budget-blower` | speaks codex JSONL, spends without limit | --budget with --adapter codex; running totals replace, never sum | v0.1.0, [eb4ef78](https://github.com/maximilliangrand/nightshift/commit/eb4ef78) | design |
 | `openclaw-budget-blower` | reports $50 of usage at the end | --budget with --adapter openclaw; the JSON envelope is priced when it lands | v0.1.0, [b45d43d](https://github.com/maximilliangrand/nightshift/commit/b45d43d) | design |
 | `openclaw-transcript-blower` | spends in the gateway, prints nothing | --budget via the session transcript tailer, before the envelope | v0.1.0, [b45d43d](https://github.com/maximilliangrand/nightshift/commit/b45d43d) | design |
+| `openclaw-reused-session` | reuses a session with 10M tokens of history | the transcript is read from where it stood when found; only this run's turn is billed | v0.2.0, pending | review |
+| `openclaw-transcript-unreadable` | session store points at an unreadable transcript | the tailer notes it once and the envelope is the count; no crash, report written | v0.2.0, pending | review |
 <!-- /cases:table -->
 
 Origins: **incident** is something that happened on one of our machines; **design** is a limit the first version had to prove; **review** is a finding from the pre-release reviews; **red team** is an attack that got through and was closed; **issue #N** is a report from the tracker.
@@ -40,7 +42,7 @@ Origins: **incident** is something that happened on one of our machines; **desig
 ## History
 
 <!-- cases:history -->
-v0.1.0: 13 → 16 → 20 → 21 → 22 → 24; v0.2.0: 24
+v0.1.0: 13 → 16 → 20 → 21 → 22 → 24; v0.2.0: 26
 <!-- /cases:history -->
 
 Counts per commit of `crashtest/run.ts`, grouped by the package version at that commit.

@@ -85,7 +85,7 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
   let renders = false;
   let metered = false;
   if (resolved) {
-    const inst = resolved.adapter.instrument(opts.command, { budgetUsd: opts.budgetUsd, forced: resolved.forced });
+    const inst = resolved.adapter.instrument(opts.command, { budgetUsd: opts.budgetUsd, forced: resolved.forced, runId: id });
     effective = inst.argv;
     renders = inst.renders;
     metered = inst.metered;
@@ -136,7 +136,8 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
       : undefined,
     onEvent: (line) => events?.write(line + "\n"),
     onUnpricedModel: (model) => notes.push(`no list price for ${model}; its tokens were counted at ceiling prices`),
-  }, { argv: effective });
+    onNote: (note) => notes.push(note),
+  }, { argv: effective, cwd: opts.cwd });
   const usage: UsageTotals = meter.totals;
 
   // Guards that are pure arithmetic over the context run on every chunk as

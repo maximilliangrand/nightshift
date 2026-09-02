@@ -45,7 +45,9 @@ A case may declare `notApplicable`, a function over the report that says why thi
 | `cgroup-escape` | detaches `/bin/sleep` with an empty environment and cwd `/`, prints nothing, exits at once: past all four nets | the cgroup net, Linux only ([docs/CGROUP.md](CGROUP.md)); reported as n/a where no cgroup can be had |
 | `codex-budget-blower` | speaks `codex exec --json`, thread total grows 100k tokens per 100 ms, every `turn.completed` emitted twice | `--budget` with `--adapter codex`, running totals are replaced, never added |
 | `openclaw-budget-blower` | prints the JSON envelope `openclaw agent --json` prints at the end of a turn, with $50 of usage at the ceiling price, then lingers | `--budget` with `--adapter openclaw`, fired on the chunk that carried the envelope |
-| `openclaw-transcript-blower` | behaves like the OpenClaw gateway: registers a session in a fake `OPENCLAW_STATE_DIR`, appends 100k tokens to the transcript every 100 ms, prints nothing | `--budget`, from the transcript tailer, while stdout is still silent |
+| `openclaw-transcript-blower` | behaves like the OpenClaw gateway for a turn started with `--session-id crash`: registers that session in a fake `OPENCLAW_STATE_DIR`, appends 100k tokens to the transcript every 100 ms, prints nothing | `--budget`, from the transcript tailer, while stdout is still silent |
+| `openclaw-reused-session` | reuses a session whose transcript already holds 10M tokens of two-month-old history (the store entry is refreshed to now, as OpenClaw does), then appends one 1k-token turn and prints the envelope | the transcript is read from where it stood when found and old messages are skipped; the run completes with 1001 tokens billed and a note that the session predates it |
+| `openclaw-transcript-unreadable` | registers a session whose `sessionFile` is a directory, prints the envelope after 2.5 s | the tailer notes the read failure once and the envelope is the count; the supervisor neither crashes nor loses the report |
 
 ## Adding a case
 
