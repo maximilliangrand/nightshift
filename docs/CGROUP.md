@@ -9,7 +9,7 @@ On Linux there is a fifth net that does not care about any of it. Cgroup members
 When a run starts on Linux, `src/cgroup.ts` tries, in this order:
 
 1. **An own sub-cgroup.** `/proc/self/cgroup` names the cgroup v2 directory nightshift itself lives in (the `0::/...` line). nightshift tries `mkdir /sys/fs/cgroup/<that>/nightshift-<runId>` and, if that works, proves the directory is usable by moving a throwaway `sh` into it. The agent is then started through a one-line wrapper (below) so that it is inside the cgroup before it can spawn anything.
-2. **A systemd user scope.** `systemd-run --user --scope --quiet --collect --unit=nightshift-<runId> -- <command>`, proven first with a no-op through the same flags. `systemd-run --scope` execs the command in place, so the pid nightshift spawned is the agent's pid and the exit code passes straight through. The scope's directory is read back from `/proc/<pid>/cgroup` once the agent is inside it.
+2. **A systemd user scope.** `systemd-run --user --scope --quiet --collect --unit=nightshift-<runId> -- <command>`. `systemd-run --scope` execs the command in place, so the pid nightshift spawned is the agent's pid and the exit code passes straight through. It is proven first with a probe scope that runs `cat /proc/self/cgroup`: that shows the user manager answers, and its output names the slice the manager puts scopes in (`app.slice` by default), so the agent's directory is known before the agent starts. Reading it from `/proc/<pid>/cgroup` afterwards would be a race, and an agent that exits in a few milliseconds wins it; the first CI run of this net lost exactly that race.
 
 If neither works, the run proceeds with the four nets exactly as before, and the report says why.
 
@@ -33,7 +33,7 @@ Typical outcomes:
 | root, anywhere with cgroup v2 | active, own sub-cgroup |
 | cron as a normal user | unavailable: the cron cgroup belongs to root and there is no user bus |
 | a Docker container | unavailable: `/sys/fs/cgroup` is usually read-only inside the container |
-| a GitHub hosted runner as the `runner` user | unavailable: no delegated cgroup, no user manager |
+| a GitHub hosted runner as the `runner` user | active, user scope: the runner has a user manager, its own cgroup is root's |
 | macOS | unavailable: no cgroups |
 
 ## How to check
@@ -69,4 +69,4 @@ sh -c 'echo $$ > "$0/cgroup.procs" && exec "$@"' <cgroupDir> <command...>
 - **A supervisor that dies hard.** If nightshift itself is SIGKILLed, the own sub-cgroup directory stays behind. An empty cgroup directory costs nothing and `rmdir` removes it; a systemd scope is collected by systemd on its own.
 - **Anything nightshift did not start.** A process the agent talks to over a socket, a daemon it asked systemd to start, a container it launched through a daemon: those are in someone else's cgroup.
 
-The crash suite does not prove the net on every machine it runs on. On macOS the `cgroup-escape` case is n/a. On a GitHub hosted runner the runner user has no cgroup of its own, so the `check` job reports n/a there too, and a separate `cgroup-probe` job runs the same case as root, where an own sub-cgroup can be created under the runner's service cgroup. The report note is the source of truth for any given run.
+The crash suite does not prove the net on every machine it runs on. On macOS the `cgroup-escape` case is n/a. On a GitHub hosted runner it is exercised twice: the `check` job runs it as the `runner` user, whose own cgroup (`/system.slice/hosted-compute-agent.service`) belongs to root but who has a user manager, so the net is a user scope; the `cgroup-probe` job runs it as root, where an own sub-cgroup is created under the runner's service cgroup. The report note is the source of truth for any given run.

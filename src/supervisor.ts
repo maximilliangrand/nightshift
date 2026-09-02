@@ -40,7 +40,7 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { promisify } from "node:util";
-import { CgroupNet, defaultCgroupPaths, planCgroup, resolveExecutable, resolveScopeDir, type CgroupPaths, type CgroupPlan } from "./cgroup.js";
+import { CgroupNet, defaultCgroupPaths, planCgroup, resolveExecutable, type CgroupPaths } from "./cgroup.js";
 
 const execFileAsync = promisify(execFile);
 const REFRESH_MIN_GAP_MS = 100;
@@ -95,7 +95,6 @@ export class Supervisor {
   private startedAt = 0;
   private readonly realCwd: string;
   private cgroup: CgroupNet | null = null;
-  private cgroupPlan: CgroupPlan | null = null;
   /** "cgroup net: active (<dir>)" or "cgroup net: unavailable (<reason>)", for the report. */
   cgroupNote = "cgroup net: unavailable (not requested)";
 
@@ -145,7 +144,6 @@ export class Supervisor {
       });
       child.once("exit", (code, signal) => resolve({ code, signal }));
     });
-    await this.adoptCgroup(child.pid ?? null);
     if (child.pid) void this.refreshDescendants(true);
     return child.pid ?? null;
   }
@@ -168,22 +166,9 @@ export class Supervisor {
       this.cgroupNote = `cgroup net: unavailable (${setup.reason})`;
       return this.opts.command;
     }
-    this.cgroupPlan = setup.plan;
+    this.cgroup = new CgroupNet(setup.plan.dir);
+    this.cgroupNote = `cgroup net: active (${setup.plan.dir})`;
     return setup.plan.command;
-  }
-
-  /** A sub-cgroup is known before spawn; a systemd scope only once the agent is inside it. */
-  private async adoptCgroup(pid: number | null): Promise<void> {
-    const plan = this.cgroupPlan;
-    if (!plan) return;
-    const paths = this.opts.cgroup?.paths ?? defaultCgroupPaths();
-    const dir = plan.dir ?? (pid && plan.unit ? await resolveScopeDir(pid, plan.unit, paths) : null);
-    if (!dir) {
-      this.cgroupNote = `cgroup net: unavailable (scope ${plan.unit} never appeared in /proc/${pid}/cgroup)`;
-      return;
-    }
-    this.cgroup = new CgroupNet(dir);
-    this.cgroupNote = `cgroup net: active (${dir})`;
   }
 
   /** Remove the run's cgroup, once nothing should be left in it. Returns a note if it could not. */

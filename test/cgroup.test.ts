@@ -14,7 +14,6 @@ import {
   parseCgroupV2Path,
   planCgroup,
   resolveExecutable,
-  resolveScopeDir,
   systemdScopePlan,
   wrapInCgroup,
   type CgroupPaths,
@@ -30,7 +29,6 @@ beforeEach(() => {
     platform: "linux",
     sysfsRoot: path.join(root, "sys", "fs", "cgroup"),
     procSelfCgroup: path.join(root, "proc", "self", "cgroup"),
-    procRoot: path.join(root, "proc"),
     systemdRun: path.join(root, "systemd-run"),
   };
   fs.mkdirSync(path.dirname(paths.procSelfCgroup), { recursive: true });
@@ -48,10 +46,25 @@ function liveIn(relative: string, opts: { create?: boolean } = {}): string {
   return dir;
 }
 
-/** A stand-in systemd-run that exits with `status` and records its arguments. */
-function fakeSystemdRun(status: number, stderr = ""): string {
+const APP_SLICE = "/user.slice/user-1000.slice/user@1000.service/app.slice";
+
+/**
+ * A stand-in systemd-run that records its arguments, answers the probe the
+ * way a real scope would (its own cgroup line, in app.slice) and exits with
+ * `status`.
+ */
+function fakeSystemdRun(status: number, stderr = "", answer = `0::${APP_SLICE}/$unit.scope`): string {
   const log = path.join(root, "systemd-run.log");
-  fs.writeFileSync(paths.systemdRun, `#!/bin/sh\necho "$@" >> "${log}"\n${stderr ? `echo "${stderr}" >&2\n` : ""}exit ${status}\n`, { mode: 0o755 });
+  const script = [
+    "#!/bin/sh",
+    `echo "$@" >> "${log}"`,
+    'for arg in "$@"; do case "$arg" in --unit=*) unit="${arg#--unit=}";; esac; done',
+    `echo "${answer}"`,
+    stderr ? `echo "${stderr}" >&2` : "",
+    `exit ${status}`,
+    "",
+  ].join("\n");
+  fs.writeFileSync(paths.systemdRun, script, { mode: 0o755 });
   return log;
 }
 
@@ -141,10 +154,18 @@ describe("systemd scope", () => {
     expect(setup.ok).toBe(true);
     if (!setup.ok) return;
     expect(setup.plan.strategy).toBe("systemd-scope");
-    expect(setup.plan.dir).toBeNull();
-    expect(setup.plan.unit).toBe("nightshift-run-2");
+    // The probe landed in app.slice, so the agent's scope will too.
+    expect(setup.plan.dir).toBe(path.join(paths.sysfsRoot, APP_SLICE, "nightshift-run-2.scope"));
     expect(setup.plan.command).toEqual([paths.systemdRun, "--user", "--scope", "--quiet", "--collect", "--unit=nightshift-run-2", "--", ...command]);
-    expect(fs.readFileSync(log, "utf8")).toBe("--user --scope --quiet --collect --unit=nightshift-run-2-probe -- true\n");
+    expect(fs.readFileSync(log, "utf8")).toBe(`--user --scope --quiet --collect --unit=nightshift-run-2-probe -- cat ${paths.procSelfCgroup}\n`);
+  });
+
+  test("is refused when the probe did not land in its scope", () => {
+    fakeSystemdRun(0, "", "0::/system.slice/cron.service");
+    expect(systemdScopePlan("run-2", command, paths)).toEqual({
+      ok: false,
+      reason: "systemd-run --user --scope: probe did not land in its scope (0::/system.slice/cron.service)",
+    });
   });
 
   test("reports systemd's own words when the user manager is missing", () => {
@@ -155,16 +176,6 @@ describe("systemd scope", () => {
 
   test("reports a missing binary", () => {
     expect(systemdScopePlan("run-2", command, paths)).toEqual({ ok: false, reason: "systemd-run not found" });
-  });
-
-  test("resolves the scope directory from /proc/<pid>/cgroup", async () => {
-    const relative = "/user.slice/user-1000.slice/user@1000.service/app.slice/nightshift-run-2.scope";
-    fs.mkdirSync(path.join(paths.procRoot, "4242"), { recursive: true });
-    fs.writeFileSync(path.join(paths.procRoot, "4242", "cgroup"), `0::${relative}\n`);
-    expect(await resolveScopeDir(4242, "nightshift-run-2", paths)).toBe(path.join(paths.sysfsRoot, relative));
-    // Not moved yet by the deadline: null, never a guess.
-    expect(await resolveScopeDir(4242, "nightshift-other", paths, 60)).toBeNull();
-    expect(await resolveScopeDir(9999, "nightshift-run-2", paths, 60)).toBeNull();
   });
 });
 

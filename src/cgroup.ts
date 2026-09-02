@@ -15,8 +15,9 @@
  *      and then execs the agent. The wrapper's pid becomes the agent's pid
  *      and the exit code passes straight through, so nothing else changes.
  *   2. `systemd-run --user --scope`, which asks the user's systemd for a
- *      transient scope and execs the agent inside it. The scope's directory
- *      is read back from /proc/<pid>/cgroup once the agent is running.
+ *      transient scope and execs the agent inside it. A probe scope run
+ *      first reports where the manager puts scopes; the agent's lands next
+ *      to it, so its directory is known before the agent starts.
  *
  * Neither works without cgroup v2, without a writable directory or without a
  * user manager (typical under cron, in containers and on CI runners). Then
@@ -36,8 +37,6 @@ export interface CgroupPaths {
   sysfsRoot: string;
   /** /proc/self/cgroup. */
   procSelfCgroup: string;
-  /** /proc, for /proc/<pid>/cgroup. */
-  procRoot: string;
   /** The systemd-run binary; a fake in tests. */
   systemdRun: string;
 }
@@ -47,7 +46,6 @@ export function defaultCgroupPaths(): CgroupPaths {
     platform: process.platform,
     sysfsRoot: "/sys/fs/cgroup",
     procSelfCgroup: "/proc/self/cgroup",
-    procRoot: "/proc",
     systemdRun: "systemd-run",
   };
 }
@@ -56,10 +54,8 @@ export interface CgroupPlan {
   strategy: "own-subtree" | "systemd-scope";
   /** The command to spawn instead of the original; same pid, same exit code. */
   command: string[];
-  /** Known up front for a sub-cgroup; null until resolved for a systemd scope. */
-  dir: string | null;
-  /** The scope unit name, for strategy 2. */
-  unit?: string;
+  /** The cgroup directory the agent will start in. */
+  dir: string;
 }
 
 export type CgroupSetup = { ok: true; plan: CgroupPlan } | { ok: false; reason: string };
@@ -78,7 +74,7 @@ export function parseCgroupV2Path(text: string): string | null {
   return null;
 }
 
-/** Decide how to contain `command` for run `runId`; null strategy means run with four nets. */
+/** Decide how to contain `command` for run `runId`; ok: false means run with four nets, and says why. */
 export function planCgroup(runId: string, command: string[], paths: CgroupPaths = defaultCgroupPaths()): CgroupSetup {
   if (paths.platform !== "linux") return { ok: false, reason: "only on Linux" };
   const own = ownSubtreePlan(runId, command, paths);
@@ -138,14 +134,22 @@ function probeMove(dir: string): string | null {
   }
 }
 
-/** Strategy 2: a transient user scope. Proven by running a no-op through it first. */
+/**
+ * Strategy 2: a transient user scope. A probe scope runs `cat
+ * /proc/self/cgroup` first: it proves the user manager answers, and its
+ * output names the slice scopes are placed in, so the agent's directory is
+ * known before spawn. Reading it from /proc/<pid>/cgroup afterwards would be
+ * a race that an agent exiting in a few milliseconds wins.
+ */
 export function systemdScopePlan(runId: string, command: string[], paths: CgroupPaths): CgroupSetup {
   const unit = `nightshift-${runId}`;
   const flags = ["--user", "--scope", "--quiet", "--collect"];
+  let probe: string;
   try {
-    execFileSync(paths.systemdRun, [...flags, `--unit=${unit}-probe`, "--", "true"], {
-      stdio: ["ignore", "ignore", "pipe"],
+    probe = execFileSync(paths.systemdRun, [...flags, `--unit=${unit}-probe`, "--", "cat", paths.procSelfCgroup], {
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 5000,
+      encoding: "utf8",
     });
   } catch (err) {
     const failure = err as { stderr?: Buffer | string; code?: string; message?: string };
@@ -153,32 +157,12 @@ export function systemdScopePlan(runId: string, command: string[], paths: Cgroup
     const stderr = failure.stderr?.toString().trim();
     return { ok: false, reason: `systemd-run --user --scope: ${stderr || failure.message || "failed"}` };
   }
-  return {
-    ok: true,
-    plan: { strategy: "systemd-scope", command: [paths.systemdRun, ...flags, `--unit=${unit}`, "--", ...command], dir: null, unit },
-  };
-}
-
-/**
- * Where systemd put the scope. systemd-run execs the agent in place, so the
- * agent's pid is the pid we spawned; its /proc entry names the scope once
- * the move has happened, which is a moment after spawn.
- */
-export async function resolveScopeDir(pid: number, unit: string, paths: CgroupPaths, timeoutMs = 3000): Promise<string | null> {
-  const deadline = Date.now() + timeoutMs;
-  const file = path.join(paths.procRoot, String(pid), "cgroup");
-  while (Date.now() < deadline) {
-    let text: string;
-    try {
-      text = fs.readFileSync(file, "utf8");
-    } catch {
-      return null;
-    }
-    const relative = parseCgroupV2Path(text);
-    if (relative !== null && relative.endsWith(`/${unit}.scope`)) return path.join(paths.sysfsRoot, relative);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  const landed = parseCgroupV2Path(probe);
+  if (landed === null || !landed.endsWith(`/${unit}-probe.scope`)) {
+    return { ok: false, reason: `systemd-run --user --scope: probe did not land in its scope (${probe.trim() || "no output"})` };
   }
-  return null;
+  const dir = path.join(paths.sysfsRoot, path.dirname(landed), `${unit}.scope`);
+  return { ok: true, plan: { strategy: "systemd-scope", command: [paths.systemdRun, ...flags, `--unit=${unit}`, "--", ...command], dir } };
 }
 
 /** A live cgroup directory: who is in it, how to kill them all, how to remove it. */

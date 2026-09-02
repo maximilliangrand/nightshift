@@ -29,11 +29,10 @@ jobs:
       - name: crash suite
         run: bun run crashtest
 
-  # The cgroup net (docs/CGROUP.md) needs a cgroup the runner may write to.
-  # Hosted runners do not delegate one to the runner user, so the suite above
-  # reports the cgroup-escape case as n/a there. Root may create a sub-cgroup
-  # under the runner's own, which is the one cheap way to exercise the net on
-  # a hosted runner.
+  # The cgroup net (docs/CGROUP.md) has two strategies. The suite above, as
+  # the runner user, exercises the systemd user scope. Root may create a
+  # sub-cgroup under the runner's own service cgroup, so running the case
+  # under sudo exercises the other strategy on the same hosted runner.
   cgroup-probe:
     runs-on: ubuntu-latest
     steps:
