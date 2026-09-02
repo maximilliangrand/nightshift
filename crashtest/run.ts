@@ -54,8 +54,11 @@ export interface Case {
   origin: Origin;
   /** null: run a command that does not exist */
   agent: string | null;
+  /** Arguments after the agent, the way the real CLI would have been invoked. */
+  args?: string[];
   limits: string[];
-  env?: Record<string, string>;
+  /** Extra environment; a function gets the case's temp dirs so a path can be made absolute under them. */
+  env?: Record<string, string> | ((ctx: { home: string; cwd: string }) => Record<string, string>);
   during?: (ctx: { home: string; cwd: string }) => Promise<void>;
   /** Why this machine cannot exercise the case, read from the report; null means judge it. */
   notApplicable?: (r: Report) => string | null;
@@ -311,7 +314,7 @@ export const CASES: Case[] = [
     origin: "design",
     agent: "openclaw-budget-blower.ts",
     // A state dir that does not exist keeps the transcript tailer away from a real ~/.openclaw on the machine running the suite.
-    env: { OPENCLAW_STATE_DIR: "openclaw-state-none" },
+    env: ({ cwd }) => ({ OPENCLAW_STATE_DIR: path.join(cwd, "openclaw-state-none") }),
     limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
     expect: (r, code) =>
       killedBy("budget")(r, code) ?? (r.usage.totalTokens !== 5_000_003 ? `counted ${r.usage.totalTokens} tokens, wanted the envelope's 5000003` : null),
@@ -322,10 +325,42 @@ export const CASES: Case[] = [
     caught: "--budget via the session transcript tailer, before the envelope",
     origin: "design",
     agent: "openclaw-transcript-blower.ts",
-    env: { OPENCLAW_STATE_DIR: "openclaw-state" },
+    args: ["--session-id", "crash"],
+    env: ({ cwd }) => ({ OPENCLAW_STATE_DIR: path.join(cwd, "openclaw-state") }),
     limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
     expect: (r, code) =>
       killedBy("budget")(r, code) ?? (r.usage.messages < 2 ? `saw ${r.usage.messages} transcript messages, wanted the live count` : null),
+  },
+  {
+    name: "openclaw-reused-session",
+    failure: "reuses a session with 10M tokens of history",
+    caught: "the transcript is read from where it stood when found; only this run's turn is billed",
+    origin: "review",
+    agent: "openclaw-reused-session.ts",
+    args: ["--session-id", "nightly"],
+    env: ({ cwd }) => ({ OPENCLAW_STATE_DIR: path.join(cwd, "openclaw-state") }),
+    limits: ["--adapter", "openclaw", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r) =>
+      r.outcome !== "completed" ? `outcome ${r.outcome}, wanted completed (${r.kill?.reason ?? "no kill"})` :
+      r.usage.totalTokens !== 1001 ? `counted ${r.usage.totalTokens} tokens, wanted this run's 1001` :
+      !r.notes.some((n) => n.startsWith("openclaw session reused existed before this run")) ? "report does not say the session predates the run" : null,
+    detail: (r) => `completed; ${r.usage.totalTokens} tokens billed, history skipped`,
+  },
+  {
+    name: "openclaw-transcript-unreadable",
+    failure: "session store points at an unreadable transcript",
+    caught: "the tailer notes it once and the envelope is the count; no crash, report written",
+    origin: "review",
+    agent: "openclaw-transcript-unreadable.ts",
+    args: ["--session-id", "crash"],
+    env: ({ cwd }) => ({ OPENCLAW_STATE_DIR: path.join(cwd, "openclaw-state") }),
+    limits: ["--adapter", "openclaw", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      r.outcome !== "completed" ? `outcome ${r.outcome}, wanted completed` :
+      code !== 0 ? `exit code ${code}, wanted 0` :
+      r.usage.totalTokens !== 1001 ? `counted ${r.usage.totalTokens} tokens, wanted the envelope's 1001` :
+      r.notes.filter((n) => n.includes("could not be read (EISDIR)")).length !== 1 ? "report does not say, once, that the transcript could not be read" : null,
+    detail: (r) => `completed; ${r.usage.totalTokens} tokens from the envelope, transcript failure noted`,
   },
 ];
 
@@ -338,8 +373,10 @@ async function runCase(c: Case): Promise<{ ok: boolean; na?: boolean; detail: st
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "nightshift-crash-cwd-"));
   const agent = c.agent ? path.join(AGENTS, c.agent) : "/nonexistent/nightshift-crashtest-missing-binary";
   const runner = c.agent === null ? [agent] : c.agent.endsWith(".sh") ? ["sh", agent] : ["bun", agent];
-  const args = [CLI, "run", "--quiet", "--tick", "500ms", "--name", c.name, ...c.limits, "--", ...runner];
-  const env = { ...process.env, NIGHTSHIFT_HOME: home, NIGHTSHIFT_BIN: `bun ${CLI}`, ...(c.env ?? {}) };
+  const args = [CLI, "run", "--quiet", "--tick", "500ms", "--name", c.name, ...c.limits, "--", ...runner, ...(c.args ?? [])];
+  const caseEnv = typeof c.env === "function" ? c.env({ home, cwd }) : (c.env ?? {});
+  const env = { ...process.env, NIGHTSHIFT_HOME: home, NIGHTSHIFT_BIN: `bun ${CLI}`, ...caseEnv };
+  const rootBefore = new Set(fs.readdirSync(ROOT));
   const started = Date.now();
 
   const child = spawn("bun", args, { cwd, env, stdio: ["ignore", "ignore", "pipe"] });
@@ -374,6 +411,9 @@ async function runCase(c: Case): Promise<{ ok: boolean; na?: boolean; detail: st
   }
   const problem = c.expect(report, result);
   if (problem) return { ok: false, detail: problem, ms };
+  // Nothing a case does may land outside its temp dirs; a stray directory in the repo is a leak too.
+  const strays = fs.readdirSync(ROOT).filter((name) => !rootBefore.has(name));
+  if (strays.length) return { ok: false, detail: `wrote into the repo root: ${strays.join(", ")}`, ms };
 
   // The assertion that matters most: nothing from this case is still alive.
   await sleep(300);

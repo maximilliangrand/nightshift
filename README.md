@@ -10,7 +10,7 @@ nightshift run --budget 5usd --max-runtime 2h --idle-timeout 15m --report telegr
 Zero dependencies. One command. Works with Claude Code, Codex, OpenClaw, Hermes, a shell script, anything you can start from a terminal.
 
 [![ci](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml/badge.svg)](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml)
-[![crash suite](https://img.shields.io/badge/crash_suite-24%2F24_failure_modes_caught-2ea44f)](docs/CASES.md) <!-- cases:badge -->
+[![crash suite](https://img.shields.io/badge/crash_suite-26%2F26_failure_modes_caught-2ea44f)](docs/CASES.md) <!-- cases:badge -->
 [![npm](https://img.shields.io/npm/v/nightshift)](https://www.npmjs.com/package/nightshift)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -168,7 +168,7 @@ A dollar budget is also passed to Claude Code as `--max-budget-usd`, so the agen
 
 **Codex CLI.** Run `codex exec "…"` under nightshift and it adds `--json`, renders agent messages, commands, file changes and tool calls back into readable text, and meters the run. Three things we learned from the Codex sources rather than from the docs alone: the usage on `turn.completed` is the thread's running total, so the meter replaces rather than sums; cached and cache-write tokens are part of `input_tokens`, so "in" in the report is the uncached remainder; and the stream never names the model, so nightshift takes it from `-m`, then from `~/.codex/config.toml`, then assumes Codex's current default and says so in the report. Pass `-m` for an exact estimate. Codex has no spend flag of its own, so with `--budget` nightshift is the only line. The adapter was built from the Codex sources and documented fixtures, not from a live run; the first real run under it should be checked against `events.jsonl`. See [docs/ADAPTERS.md](docs/ADAPTERS.md).
 
-**OpenClaw.** Run `openclaw agent …` under nightshift and it adds `--json` and meters the turn from two places: the JSON envelope OpenClaw prints when the turn is over, and the session transcript the gateway writes while it runs, which is where per-message usage, cache tokens, tool calls and OpenClaw's own cost figure live. The transcript is tailed once a second, so `--budget` fires while the money is being spent, not after. Dollars come from OpenClaw's reported cost when it has one, from list prices for a Claude model id, and from the ceiling rate for anything else. Two things to know: OpenClaw has no budget flag, so nightshift is the only line; and `openclaw agent` is a thin client whose model calls run inside the gateway, so a kill stops the wait and writes the report but does not stop a gateway-side turn. Pass `--local` for a run the kill reaches, and `--session-id` for exact attribution. See [docs/ADAPTERS-openclaw.md](docs/ADAPTERS-openclaw.md).
+**OpenClaw.** Run `openclaw agent …` under nightshift and it adds `--json` and meters the turn from two places: the JSON envelope OpenClaw prints when the turn is over, and the session transcript the gateway writes while it runs, which is where per-message usage, cache tokens, tool calls and OpenClaw's own cost figure live. The transcript is tailed once a second, so `--budget` fires while the money is being spent, not after. Every run gets its own session: unless you pass `--session-id`, nightshift adds `--session-id nightshift-<run id>` and reads only the transcript OpenClaw keys under that id, never whichever session happened to start in the same second. Pass `--session-id` yourself to continue an existing session; a session that predates the run is billed only for what the run appended. Dollars come from OpenClaw's reported cost when it has one, from list prices for a Claude model id, and from the ceiling rate for anything else. Two things to know: OpenClaw has no budget flag, so nightshift is the only line; and `openclaw agent` is a thin client whose model calls run inside the gateway, so a kill stops the wait and writes the report but does not stop a gateway-side turn. Pass `--local` for a run the kill reaches. See [docs/ADAPTERS-openclaw.md](docs/ADAPTERS-openclaw.md).
 
 Prices are list prices as of 2026-09-02, cached input included. Override any of them with `NIGHTSHIFT_PRICES='{"claude-opus-5":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":10}}'` (USD per million tokens); an unknown model id is counted at the most expensive rate, so a budget is never blind.
 
@@ -217,7 +217,7 @@ Exit codes: `0` completed · `1` failed · `2` killed by a limit · `3` postcond
 
 ## The crash suite
 
-Claims about supervisors are cheap. `bun run crashtest` runs <!-- cases:count -->24<!-- /cases:count --> deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**. This is a run on a Mac (paths abridged):
+Claims about supervisors are cheap. `bun run crashtest` runs <!-- cases:count -->26<!-- /cases:count --> deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**. This is a run on a Mac (paths abridged):
 
 ```
 nightshift crash suite · 24 failure modes
