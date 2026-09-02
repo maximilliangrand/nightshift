@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   check:
@@ -27,3 +28,28 @@ jobs:
       - run: node dist/cli.js --version
       - name: crash suite
         run: bun run crashtest
+
+  # The cgroup net (docs/CGROUP.md) needs a cgroup the runner may write to.
+  # Hosted runners do not delegate one to the runner user, so the suite above
+  # reports the cgroup-escape case as n/a there. Root may create a sub-cgroup
+  # under the runner's own, which is the one cheap way to exercise the net on
+  # a hosted runner.
+  cgroup-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: where the runner lives
+        run: |
+          id
+          uname -r
+          cat /proc/self/cgroup
+          ls -ld /sys/fs/cgroup
+          systemd-run --user --scope --quiet --collect -- true || true
+      - name: cgroup-escape as the runner user
+        run: bun run crashtest cgroup-escape
+      - name: cgroup-escape as root
+        run: sudo -E env "PATH=$PATH" bun run crashtest cgroup-escape

@@ -2,6 +2,7 @@ export { runSupervised, EXIT_CODES, type RunOptions } from "./run.js";
 export { UsageError } from "./errors.js";
 export { redact } from "./redact.js";
 export { Supervisor, processTable, pidsWithEnv, type KillResult, type ExitInfo, type ProcessRow } from "./supervisor.js";
+export { CgroupNet, planCgroup, parseCgroupV2Path, wrapInCgroup, type CgroupPaths, type CgroupPlan, type CgroupSetup } from "./cgroup.js";
 export { claim, readLedger, summarize, type ClaimResult, type LedgerEntry } from "./ledger.js";
 export { ClaudeStreamMeter, instrumentClaudeArgv, priceFor, costOf, LIST_PRICES, claudeAdapter } from "./meters/claude.js";
 export { ADAPTERS, ADAPTER_NAMES, resolveAdapter, type Adapter, type Meter, type MeterHooks, type Instrumentation, type UsageTotals } from "./meters/index.js";
