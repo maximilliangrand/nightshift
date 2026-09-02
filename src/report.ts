@@ -202,7 +202,7 @@ function spendLines(u: UsageTotals): string[] {
   const model = u.model ? ` on ${u.model}` : "";
   if (u.actualUsd !== undefined) {
     const drift = u.estimatedUsd ? ` (live estimate ${fmtMoney(u.estimatedUsd)})` : "";
-    lines.push(`- **${fmtMoney(u.actualUsd)}** reported by Claude Code${drift}${model}`);
+    lines.push(`- **${fmtMoney(u.actualUsd)}** reported by the agent${drift}${model}`);
   } else if (u.priceSource === "list") {
     lines.push(`- **~${fmtMoney(u.estimatedUsd)}** estimated from list prices${model} (run did not reach a result event)`);
   } else if (u.priceSource === "ceiling") {
@@ -243,7 +243,13 @@ export function outcomeSentence(r: RunReport): string {
 export function renderShort(r: RunReport): string {
   const u = r.usage;
   const spend =
-    u.actualUsd !== undefined ? fmtMoney(u.actualUsd) : u.priceSource === "list" ? `~${fmtMoney(u.estimatedUsd)}` : "unmetered";
+    u.actualUsd !== undefined
+      ? fmtMoney(u.actualUsd)
+      : u.priceSource === "list"
+        ? `~${fmtMoney(u.estimatedUsd)}`
+        : u.priceSource === "ceiling"
+          ? `~${fmtMoney(u.estimatedUsd)} (ceiling)`
+          : "unmetered";
   const lines = [
     `${OUTCOME_ICON[r.outcome]} nightshift ${r.name ?? r.id}`,
     outcomeSentence(r),

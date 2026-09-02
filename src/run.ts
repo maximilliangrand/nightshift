@@ -135,7 +135,7 @@ export async function runSupervised(opts: RunOptions): Promise<RunReport> {
         }
       : undefined,
     onEvent: (line) => events?.write(line + "\n"),
-    onUnpricedModel: (model) => notes.push(`no list price for ${model}; live budget could not count its tokens`),
+    onUnpricedModel: (model) => notes.push(`no list price for ${model}; its tokens were counted at ceiling prices`),
   }, { argv: effective });
   const usage: UsageTotals = meter.totals;
 

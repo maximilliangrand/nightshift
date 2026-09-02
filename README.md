@@ -10,7 +10,7 @@ nightshift run --budget 5usd --max-runtime 2h --idle-timeout 15m --report telegr
 Zero dependencies. One command. Works with Claude Code, Codex, OpenClaw, Hermes, a shell script, anything you can start from a terminal.
 
 [![ci](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml/badge.svg)](https://github.com/maximilliangrand/nightshift/actions/workflows/ci.yml)
-[![crash suite](https://img.shields.io/badge/crash_suite-24%2F24_failure_modes_caught-2ea44f)](docs/CRASHTEST.md) <!-- cases:badge -->
+[![crash suite](https://img.shields.io/badge/crash_suite-24%2F24_failure_modes_caught-2ea44f)](docs/CASES.md) <!-- cases:badge -->
 [![npm](https://img.shields.io/npm/v/nightshift)](https://www.npmjs.com/package/nightshift)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -113,16 +113,17 @@ An agent that exits 0 without producing `out/report.json` gets outcome `postcond
 
 ## A kill that kills
 
-Most supervisors send one signal to one pid and hope. Agents spawn shells, which spawn tools, which spawn servers. nightshift casts four nets:
+Most supervisors send one signal to one pid and hope. Agents spawn shells, which spawn tools, which spawn servers. nightshift casts five nets, four of them everywhere and one on Linux:
 
 1. **The process group.** The agent runs as leader of its own group, so one signal reaches the whole tree.
 2. **The descendant map.** A `ps` tree walk at spawn, on every chunk of output and on every tick. Every pid is remembered with its start time, so a pid recycled by an unrelated process is dropped rather than signalled, and a grandchild that re-parented to `init` stays on the list.
 3. **The environment marker.** Every process nightshift starts inherits `NIGHTSHIFT_RUN_ID`. Anything still carrying it is ours, regardless of what it did to its group or parent (`ps -E` on macOS, `/proc/*/environ` on Linux).
 4. **The stray check.** A snapshot of the process table is taken before spawn. Anything that was not there then, started after the run began, has been re-parented to `init`, and still has the run's working directory as its cwd (`lsof` on macOS, `/proc/*/cwd` on Linux) is ours too. This is the net that catches a silent parent detaching `/bin/sleep` into a new session and exiting within a millisecond, which the red team did on its first try.
+5. **The cgroup (Linux).** Every one of the first four nets identifies a process by something it can change about itself: its group, its parent, its environment, its working directory. Cgroup membership is inherited on fork and cannot be given up without write access to `/sys/fs/cgroup`, so on Linux nightshift starts the agent inside a cgroup of its own and `cgroup.procs` lists every descendant no matter what it did. It takes a sub-cgroup under its own when it may create one (a systemd user session, a user service, root anywhere), or a transient `systemd-run --user --scope` otherwise; the agent is moved in by a one-line `sh` wrapper that then `exec`s it, so the pid and exit code are the agent's. Kill waves write to `cgroup.kill` on kernels that have it. Where no cgroup can be had (cron as a normal user, a container with a read-only cgroup mount, macOS) the run proceeds with four nets and the report says `cgroup net: unavailable (<reason>)` in the kernel's own words; otherwise it says `cgroup net: active (<dir>)`. Details in [docs/CGROUP.md](docs/CGROUP.md).
 
 The grace period is measured from the SIGTERM, not from when the direct child happened to exit: a `sh` wrapper dying instantly does not shorten the grace for the worker underneath it. After the agent exits on its own, the same nets sweep for orphans; anything found is killed and listed in the report. Anything that survives all of that is listed by pid under **Survivors**, in bold, because a kill that quietly did not kill is the worst outcome there is.
 
-The honest gap, found by trying to break it: on macOS, Apple platform binaries (`/bin/sh`, `/bin/sleep`, `/usr/bin/tail`) never show their environment to `ps -E`, so net 3 does not see them. A process escapes only if it is detached into a new session by a parent that prints nothing and exits before the first tree walk, *and* it scrubs or cannot show its environment, *and* it changes its working directory away from the run's. Every one of those steps has to be deliberate. On Linux, `/proc` shows environment and cwd for everything of yours. Ctrl-C once stops gracefully, twice sends SIGKILL now, three times leaves without a report.
+The honest gap, found by trying to break it: on macOS, Apple platform binaries (`/bin/sh`, `/bin/sleep`, `/usr/bin/tail`) never show their environment to `ps -E`, so net 3 does not see them. A process escapes on macOS only if it is detached into a new session by a parent that prints nothing and exits before the first tree walk, *and* it scrubs or cannot show its environment, *and* it changes its working directory away from the run's. Every one of those steps has to be deliberate. The `cgroup-escape` case in the suite does exactly that: on Linux with the cgroup net active it is caught, and everywhere else the suite reports it as n/a rather than pretending. Ctrl-C once stops gracefully, twice sends SIGKILL now, three times leaves without a report.
 
 ## The ledger: side effects that happen once
 
@@ -154,21 +155,31 @@ For a command no rule matches, the hook fails open: if nightshift itself is brok
 
 ## Metering
 
-nightshift knows how to read Claude Code's `--output-format stream-json`. When you run `claude -p …` under it, it turns that on for you, renders the stream back into readable text, and keeps a live count of tokens and dollars.
+nightshift knows how to read three agents' machine output: Claude Code, Codex CLI and OpenClaw. `--adapter auto` picks one by the command name. Each adapter switches the agent's structured output on for you, renders it back into readable text, and keeps a live count of tokens and dollars.
+
+**Claude Code.** When you run `claude -p …` under nightshift, it adds `--output-format stream-json` and reads it.
 
 Two things we learned by looking rather than assuming:
 
 - Claude Code emits one `assistant` event per content block, all carrying the same message id and the same usage. Summing naively double-counts by up to 2×. The meter keys usage by message id.
 - Dollars are only reported at the end (`total_cost_usd`). A budget that fires after the money is spent is not a budget, so spend is estimated live from tokens at list prices and reconciled against the reported figure when the run ends. The report shows both. The live estimate does not see thinking tokens until the result arrives, so it runs a few percent low; the reported figure is the bill. A model with no list price is counted at the most expensive rate, so a budget is never blind to an unknown model id. An event that arrives without its trailing newline is counted as soon as it is a complete object.
 
-A dollar budget is also passed to Claude Code as `--max-budget-usd`, so the agent stops itself first and nightshift is the second line, not the only one. Override prices with `NIGHTSHIFT_PRICES='{"claude-opus-5":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":10}}'` (USD per million tokens).
+A dollar budget is also passed to Claude Code as `--max-budget-usd`, so the agent stops itself first and nightshift is the second line, not the only one.
+
+**Codex CLI.** Run `codex exec "…"` under nightshift and it adds `--json`, renders agent messages, commands, file changes and tool calls back into readable text, and meters the run. Three things we learned from the Codex sources rather than from the docs alone: the usage on `turn.completed` is the thread's running total, so the meter replaces rather than sums; cached and cache-write tokens are part of `input_tokens`, so "in" in the report is the uncached remainder; and the stream never names the model, so nightshift takes it from `-m`, then from `~/.codex/config.toml`, then assumes Codex's current default and says so in the report. Pass `-m` for an exact estimate. Codex has no spend flag of its own, so with `--budget` nightshift is the only line. The adapter was built from the Codex sources and documented fixtures, not from a live run; the first real run under it should be checked against `events.jsonl`. See [docs/ADAPTERS.md](docs/ADAPTERS.md).
+
+**OpenClaw.** Run `openclaw agent …` under nightshift and it adds `--json` and meters the turn from two places: the JSON envelope OpenClaw prints when the turn is over, and the session transcript the gateway writes while it runs, which is where per-message usage, cache tokens, tool calls and OpenClaw's own cost figure live. The transcript is tailed once a second, so `--budget` fires while the money is being spent, not after. Dollars come from OpenClaw's reported cost when it has one, from list prices for a Claude model id, and from the ceiling rate for anything else. Two things to know: OpenClaw has no budget flag, so nightshift is the only line; and `openclaw agent` is a thin client whose model calls run inside the gateway, so a kill stops the wait and writes the report but does not stop a gateway-side turn. Pass `--local` for a run the kill reaches, and `--session-id` for exact attribution. See [docs/ADAPTERS-openclaw.md](docs/ADAPTERS-openclaw.md).
+
+Prices are list prices as of 2026-09-02, cached input included. Override any of them with `NIGHTSHIFT_PRICES='{"claude-opus-5":{"input":5,"output":25,"cacheRead":0.5,"cacheWrite":10}}'` (USD per million tokens); an unknown model id is counted at the most expensive rate, so a budget is never blind.
 
 | Command | Supervised | Metered |
 |---|---|---|
 | `claude -p …` | yes | yes: tokens, dollars, tool calls, files, commands, rate-limit windows |
-| `claude` (interactive) | yes | no |
-| Codex, OpenClaw, Hermes, Aider, your script | yes | no; `--budget` and `--max-tokens` refuse to start unless you pass `--allow-unmetered` |
-| Anything that speaks stream-json on stdout | yes | yes, with `--adapter claude` |
+| `codex exec …` | yes | yes: tokens, dollars, commands, file changes, tool calls |
+| `openclaw agent …` | yes | yes: tokens, dollars (OpenClaw's own figure when it has one), tool calls, from the envelope and the session transcript |
+| `claude` / `codex` interactive | yes | no |
+| Hermes, Aider, your script | yes | no; `--budget` and `--max-tokens` refuse to start unless you pass `--allow-unmetered` |
+| Anything that speaks one of those formats on stdout | yes | yes, with `--adapter claude`, `codex` or `openclaw` |
 
 nightshift refuses to start a run with a `--budget` it cannot measure. A limit that silently does nothing is worse than none.
 
@@ -209,35 +220,37 @@ Exit codes: `0` completed · `1` failed · `2` killed by a limit · `3` postcond
 Claims about supervisors are cheap. `bun run crashtest` runs <!-- cases:count -->24<!-- /cases:count --> deliberately broken cases under nightshift, each with the limit that should catch it, and passes only if the report says the right thing **and no process from the case is left alive**.
 
 ```
-nightshift crash suite · 20 failure modes
+nightshift crash suite · 24 failure modes
 
   hang             goes silent forever                  ✅ idle-timeout: silent for 2s, limit 2s (2.4s)
   runaway          never finishes                       ✅ max-runtime: ran for 2s, limit 2s (2.4s)
   ignore-sigterm   traps SIGTERM                        ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.7s)
-  fast-orphan      detaches a child, exits in 60ms      ✅ exit 0; killed 1 orphan (0.2s)
-  wrapper-shell    sh wrapper dies, worker ignores TERM ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.8s)
-  spawn-fail       command does not exist               ✅ failed in 19ms (0.1s)
+  fast-orphan      detaches a child, exits in 60ms      ✅ exit 0; killed 1 orphan (0.3s)
+  wrapper-shell    sh wrapper dies, worker ignores TERM ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (3.7s)
+  spawn-fail       command does not exist               ✅ failed in 21ms (0.1s)
   silent-orphan    detaches /bin/sleep, exits silently  ✅ exit 0; killed 1 orphan (0.2s)
-  grace-spawner    spawns /bin/sleep from its SIGTERM handler ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (4.7s)
+  grace-spawner    spawns /bin/sleep from its SIGTERM handler ✅ max-runtime: ran for 2s, limit 2s → SIGKILL (4.8s)
   unpriced-model   spends on a model with no price      ✅ budget: $2.00 spent (estimated), limit $2.00 (0.5s)
-  noeol-stream     one huge event, no newline           ✅ max-tokens: 900k tokens used, limit 300k (0.3s)
+  noeol-stream     one huge event, no newline           ✅ max-tokens: 900k tokens used, limit 300k (0.4s)
   orphan           detaches a child, exits 0            ✅ exit 0; killed 1 orphan (1.7s)
   fork-bomb-lite   30 children, then silence            ✅ idle-timeout: silent for 2s, limit 2s (2.4s)
-  disk-filler      fills the disk                       ✅ max-disk-growth: grew 118MB, limit 30MB (3.4s)
-  output-flood     floods stdout                        ✅ max-output: 8.0MB of output, limit 8.0MB (0.4s)
-  budget-blower    spends without limit                 ✅ budget: $2.00 spent (estimated), limit $2.00 (0.8s)
-  token-blower     burns tokens                         ✅ max-tokens: 300k tokens used, limit 300k (0.6s)
+  disk-filler      fills the disk                       ✅ max-disk-growth: grew 98MB, limit 30MB (2.9s)
+  output-flood     floods stdout                        ✅ max-output: 8.2MB of output, limit 8.0MB (0.4s)
+  budget-blower    spends without limit                 ✅ budget: $2.00 spent (estimated), limit $2.00 (0.7s)
+  token-blower     burns tokens                         ✅ max-tokens: 300k tokens used, limit 300k (0.7s)
   send-loop        sends 21 messages                    ✅ ledger allowed 5, refused 16 (0.6s)
   kill-file        must be stopped by hand              ✅ kill-file: kill file present (2.9s)
   postcondition    claims success, produced nothing     ✅ exit 0 but path out.json missing → exit 3 (0.1s)
-  stdin-waiter     waits for a keyboard                 ✅ completed in 38ms (0.1s)
+  stdin-waiter     waits for a keyboard                 ✅ completed in 37ms (0.1s)
+  cgroup-escape    setsid, env {}, cwd /, silent exit   ➖ n/a: not linux, no cgroup net; the escape works here, which is the documented gap (0.2s)
+  codex-budget-blower speaks codex JSONL, spends without limit ✅ budget: $2.00 spent (estimated), limit $2.00 (0.8s)
+  openclaw-budget-blower reports $50 of usage at the end      ✅ budget: $50.00 spent (estimated), limit $2.00 (0.3s)
+  openclaw-transcript-blower spends in the gateway, prints nothing ✅ budget: $9.00 spent (estimated), limit $2.00 (1.4s)
 
-20/20 failure modes caught
+23/23 failure modes caught, 1 n/a on this machine
 ```
 
-It runs in CI on macOS and Linux. Add a case when you meet a new way for an agent to go wrong; see [docs/CRASHTEST.md](docs/CRASHTEST.md).
-
-Contributing a failure mode: the scoreboard of every case and where it came from is [docs/CASES.md](docs/CASES.md); how an escape becomes a case is in [CONTRIBUTING.md](CONTRIBUTING.md).
+It runs in CI on macOS and Linux; a case that a machine cannot exercise (the cgroup net on macOS) is reported as n/a, never as a pass. Every case is on the scoreboard in [docs/CASES.md](docs/CASES.md): what the agent does, what catches it, which commit added it and where it came from, an incident on one of our machines, a review, the red team, or an issue somebody opened. The badge above is that table's count, and CI refuses to go green when the two drift: `bun scripts/cases.ts --check` is the gate, `--write` fixes it, `bun run cases` prints the table without running anything. If an agent got past nightshift on your machine, open an issue with the "My agent escaped" form. An accepted escape becomes a case in the suite before it is fixed; the rules are in [CONTRIBUTING.md](CONTRIBUTING.md), and how to write one is in [docs/CRASHTEST.md](docs/CRASHTEST.md).
 
 ## What it is not
 
@@ -259,7 +272,7 @@ Contributing a failure mode: the scoreboard of every case and where it came from
 git clone https://github.com/maximilliangrand/nightshift && cd nightshift
 bun install
 bun test              # unit tests
-bun run crashtest     # the twenty misbehaving cases
+bun run crashtest     # every case; `bun run cases` lists them without running
 bun run build         # dist/ for node
 ```
 
