@@ -218,7 +218,7 @@ function spendLines(u: UsageTotals): string[] {
     const pct = (v?: number) => (v === undefined ? "?" : `${Math.round(v * 100)}%`);
     lines.push(`- Subscription windows after this run: 5h ${pct(u.rateLimits.fiveHour)}, 7d ${pct(u.rateLimits.sevenDay)} used`);
   }
-  if (u.terminalReason && u.terminalReason !== "completed") lines.push(`- Claude Code ended with: ${u.terminalReason}`);
+  if (u.terminalReason && u.terminalReason !== "completed") lines.push(`- The agent ended with: ${u.terminalReason}`);
   return lines;
 }
 

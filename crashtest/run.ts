@@ -1,5 +1,5 @@
 /**
- * The crash suite. Twenty cases of agents that misbehave the way real ones did, each
+ * The crash suite. Twenty-one cases of agents that misbehave the way real ones did, each
  * run under nightshift with the limit that should catch it. A case passes
  * only if the report says what happened *and* nothing is left running.
  *
@@ -211,6 +211,15 @@ const CASES: Case[] = [
     limits: ["--max-runtime", "10s"],
     expect: (r) =>
       r.outcome !== "completed" ? `outcome ${r.outcome}` : r.durationMs > 5000 ? `took ${r.durationMs}ms; stdin was not closed` : null,
+  },
+  {
+    name: "codex-budget-blower",
+    failure: "speaks codex JSONL, spends without limit",
+    agent: "codex-blower.ts",
+    limits: ["--adapter", "codex", "--budget", "2usd", "--max-runtime", "30s"],
+    expect: (r, code) =>
+      killedBy("budget")(r, code) ??
+      (r.usage.estimatedUsd > 3 ? `estimate ${r.usage.estimatedUsd} suggests running totals were added up` : null),
   },
 ];
 

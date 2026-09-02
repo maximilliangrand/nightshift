@@ -40,6 +40,7 @@ A case passes only if `expect` returns `null` and step 5 finds nothing. The suit
 | `kill-file` | a well-behaved minute-long job | `nightshift stop latest` from the harness |
 | `postcondition` | exits 0, never writes the required file | `--require`, exit code 3 |
 | `stdin-waiter` | waits on stdin | stdin is closed by default, exits at once |
+| `codex-budget-blower` | speaks `codex exec --json`, thread total grows 100k tokens per 100 ms, every `turn.completed` emitted twice | `--budget` with `--adapter codex`, running totals are replaced, never added |
 
 ## Adding a case
 
@@ -56,4 +57,4 @@ Cases should reproduce something that actually happened, or something you are ce
 - The `--idle-timeout` watchdog measures silence. An agent that prints a dot every second while doing nothing is not idle by that definition; `--max-runtime` and `--budget` are the limits for that shape.
 - Disk growth outside the watched directories and off the working volume.
 - Network side effects that do not go through the ledger or the hook.
-- Anything that needs a real model. `budget-blower.ts` fakes the stream; the metering itself is covered by `test/claude-meter.test.ts` against events captured from a real run.
+- Anything that needs a real model. `budget-blower.ts` and `codex-blower.ts` fake the streams; the metering itself is covered by `test/claude-meter.test.ts` against events captured from a real run and by `test/codex-meter.test.ts` against the shapes in the Codex sources and docs (see [ADAPTERS.md](ADAPTERS.md)).

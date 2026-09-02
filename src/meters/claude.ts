@@ -49,7 +49,8 @@ export const LIST_PRICES: Record<string, Price> = {
 /** Used for a model we have no row for, so a budget is never blind: the most expensive row. */
 export const CEILING_PRICE: Price = { input: 10, output: 50, cacheRead: 1, cacheWrite: 20 };
 
-function priceOverrides(): Record<string, Price> {
+/** NIGHTSHIFT_PRICES, one table for every adapter, keyed by model id. */
+export function priceOverrides(): Record<string, Price> {
   const raw = process.env.NIGHTSHIFT_PRICES;
   if (!raw) return {};
   try {
