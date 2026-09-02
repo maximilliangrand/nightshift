@@ -157,7 +157,7 @@ export class Supervisor {
     const wanted = this.opts.cgroup;
     if (!wanted) return this.opts.command;
     const paths = wanted.paths ?? defaultCgroupPaths();
-    if (paths.platform === "linux" && !resolveExecutable(file, this.opts.env.PATH)) {
+    if (paths.platform === "linux" && !resolveExecutable(file, this.opts.env.PATH, this.opts.cwd)) {
       this.cgroupNote = "cgroup net: unavailable (command not found)";
       return this.opts.command;
     }
