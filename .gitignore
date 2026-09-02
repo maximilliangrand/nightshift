@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.nightshift/
+*.log
+.DS_Store

@@ -1,0 +1,28 @@
+{
+  "name": "nightshift",
+  "version": "0.1.0",
+  "description": "Supervisor for unattended AI agent runs. Hard limits on time, tokens, dollars, disk and side effects; a morning report of what happened while you slept. Zero dependencies.",
+  "license": "MIT",
+  "author": "Maxim Gagiev <maximgagiev@myg-media.com>",
+  "repository": { "type": "git", "url": "https://github.com/maximilliangrand/nightshift" },
+  "homepage": "https://github.com/maximilliangrand/nightshift#readme",
+  "keywords": ["ai-agents", "claude-code", "codex", "openclaw", "supervisor", "watchdog", "budget", "unattended", "cron", "launchd", "hooks"],
+  "type": "module",
+  "bin": { "nightshift": "./dist/cli.js" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test test/",
+    "crashtest": "bun run crashtest/run.ts",
+    "prepublishOnly": "npm run build && npm test && npm run crashtest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "bun-types": "latest"
+  }
+}
